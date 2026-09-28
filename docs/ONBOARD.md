@@ -258,18 +258,22 @@ The reconciler starts first and must reach both chain heads before your seat can
 Until then it denies price-setting tasks — correct, and indistinguishable from a broken seat if you
 do not know to expect it.
 
-**Expect the first start to sit on NOT READY for several minutes, with no output.** It replays from
-the deployment blocks to head. Measured on a real first run (2026-08-22, 2 vCPU / 4 GB): **~8 minutes
-and ~2 GiB peak RSS**, most of it a silent Ethereum USDC `getLogs` walk. Two consequences:
+**Expect the first start to sit on NOT READY for a while, often with long silent stretches.** It
+replays from the deployment blocks to head, and the time depends on your providers' latency and on
+the stack's age. Measured on the current code (2026-09-28) with public endpoints: the September 23
+stack's first five days took **11 minutes at 33 MB peak memory**. Memory stays flat as the history
+grows, because the reconciler commits bounded chunks; time does not, so expect longer on public
+endpoints and on an older stack. (An August release walked the whole Ethereum history in one pass and
+peaked near 2 GiB. A 2 GB host is now enough.)
 
-- **Do not use a 2 GB host for the first start.** 4 GB is comfortable; 2 GB is not, and the failure
-  would come during catch-up rather than at boot.
-- **Watch the reconciler, not the clock** — this is the only place that shows progress:
-  ```bash
-  docker compose logs -f reconciler
-  ```
-  `check-operator-ready.sh` can only say the inventory does not exist yet, which reads identically to
-  a hung reconciler. It is not hung until the reconciler log stops moving.
+**Watch the reconciler, not the clock** — this is the only place that shows progress:
+
+```bash
+docker compose logs -f reconciler
+```
+
+`check-operator-ready.sh` can only say the inventory does not exist yet, which reads identically to
+a hung reconciler. It is not hung until the reconciler log stops moving.
 
 Then check readiness — the gate is **READY**, not `/health` and not `docker ps`:
 
