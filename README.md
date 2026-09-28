@@ -43,11 +43,25 @@ inventory, and generate your own key — accepting any of those from Ditto adds 
 
 ## Requirements
 
-- Linux host, 2 vCPU / 4 GB is ample
+- A host that stays up 24/7. The reference deployment is Linux with Docker. **1–2 vCPU, 2 GB RAM
+  and about 20 GB of disk are enough.** Measured on the current code (2026-09-28): the reconciler's
+  first run over the September 23 stack's history peaked at 33 MB, a BLS signature took 0.4 s and
+  33 MB on an Apple M4 (a small cloud vCPU is slower, well inside the signer's 10 s timeout), and
+  Ditto's own seats run capped at 512 MB each.
 - Docker + Compose (reference deployment), or Node 22 + Python 3 + `py_ecc==8.0.0` + Foundry `cast`
-- **Two independent RPC endpoints per chain** (Mezo 31612, Ethereum 1), with historical state/log
-  reads back to the deployment blocks (including the initial preceding-block balance read).
-  You need providers with that history, not a dedicated archive node of your own.
+- **Two independent RPC endpoints per chain** (Mezo 31612, Ethereum 1), over HTTPS. They must serve:
+  - **signing:** recent state only. Reads are pinned 6 Mezo / 12 Ethereum blocks behind head and at
+    most a few minutes old, so any full node serves them;
+  - **the reconciler's first run:** logs and historical state from the deployment blocks (for the
+    September 23 stack, Mezo 12045502 and Ethereum 26040402). On Ethereum that means archive state,
+    which most paid plans include. You do not need an archive node of your own;
+  - **`eth_getLogs` ranges** of at least 150 blocks on Ethereum, ideally 5,000 on Mezo. Smaller
+    limits still work, because the reconciler splits requests, at the cost of more calls;
+  - **about 1–3 requests per second**, using `eth_blockNumber`, `eth_getBlockByNumber`,
+    `eth_getLogs` and `eth_call`.
+
+  The first sync is bound by provider latency and grows with the stack's age. On public endpoints
+  the September 23 stack's first five days took 11 minutes. Use paid providers for a production seat.
 - WireGuard connectivity to Ditto's aggregator
 
 Your RPC providers are **inside your seat's trust boundary**. Canonical prices are pinned by block

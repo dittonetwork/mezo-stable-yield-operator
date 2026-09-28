@@ -16,6 +16,14 @@ commit and the export digest (`python3 ops/build/export-operator-repo.py <dir>` 
 Joining the older pilot is not supported by this distribution. External seats need the agreed
 deployment record, commit and manifest. No rc2 tag has been issued.
 
+## 2026-09-28 — host sizing and RPC requirements
+
+- Documentation only. README and `docs/ONBOARD.md` now state measured requirements on the current
+  code: 1–2 vCPU, 2 GB RAM and about 20 GB of disk; the reconciler's first run peaked at 33 MB.
+  The earlier 4 GB advice came from an August release that walked the whole Ethereum history at once.
+- RPC requirements are spelled out: recent state for signing, archive state on Ethereum for the first
+  sync, `eth_getLogs` range sizes, request rate and methods.
+
 ## 2026-09-28 — repository publication preparation
 
 - Documentation and packaging only; no runtime file changes. Seats keep running canonical `5cd9d0c`.
