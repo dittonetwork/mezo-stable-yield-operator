@@ -1,0 +1,35 @@
+{
+ "_generated": "transcribed from ops/deployments/mainnet-2026-08-11.json (schemaVersion 1, the LIVE PILOT's chain-pinned record) into the key set ops/deployment-addresses.py writes for a canonical deployment; deployedAtBlock is that record's observedAtBlock \u2014 the blocks every seat already reconciles from. Not a new deployment: the pilot was deployed through the legacy lineage and has no ceremony manifest. `deployment` is the id the pilot's guardian enrolment manifest uses (ops/enrol-manifest.example.json), i.e. the string an operator signs in the challenge; the schemaVersion-1 record's deploymentId is mainnet-2026-08-11 \u2014 same deployment, two labels.",
+ "deployment": "mainnet-pilot-2026-08",
+ "commit": "0cffc1002567a206d47fa8fac5f7ce35cc69e734",
+ "chainIds": {
+  "mezo": 31612,
+  "eth": 1
+ },
+ "deployedAtBlock": {
+  "mezo": 11195721,
+  "eth": 25775990
+ },
+ "vault": "0x762a17f2B3164ea5010C1C88085AeAC8872957D0",
+ "executor": "0xb08F6bac55d0058B11D74E0cF6A76EF4C2A43754",
+ "queue": "0x9D72922Fd520154a2bE98D36033839874B274290",
+ "nav": "0x40bb55996363e5Da6754A65fAB4F70fB520Ff99e",
+ "mezoVerifier": "0x53CBa6eBc4c420447A74DE744B52A6b142f5e99a",
+ "mezoWhitelist": "0x8e9eB5e7Ab57d7569eb8a4fcB1c583c94f3396dd",
+ "swapAdapter": "0x20ce81d735639F5a5f9ee88227786E82821540D7",
+ "mezoBridgeAdapter": "0xE03d2DfB535662d2835210DB5909291C8Ccd78F9",
+ "receiver": "0x7817548BE174C22DecDe831Ea9d514927fD0D286",
+ "ethVerifier": "0xC0dD691e7dA580cD75e84Ce789F5DEA341D1BA21",
+ "ethWhitelist": "0xE03d2DfB535662d2835210DB5909291C8Ccd78F9",
+ "venueAdapter": "0x944C7F5e08686117a5Bf66bE56b2B4bae869642C",
+ "ethBridgeAdapter": "0x20ce81d735639F5a5f9ee88227786E82821540D7",
+ "musd": "0xdD468A1DDc392dcdbEf6db6e34E89AA338F9F186",
+ "musdc": "0x04671C72Aab5AC02A03c1098314b1BB6B560c197",
+ "usdc": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+ "swapPool": "0xCC372B7E15535aB225fe17c1075831D38ef7aC1a",
+ "swapQuoter": "0x4E56aF2d49D3D8F9a99155b31dd117ccDD545dC7",
+ "sparkSavings": "0x28B3a8fb53B741A8Fd78c0fb9A6B2393d896a43d",
+ "venueClassId": "spark-savings",
+ "assetsBridge": "0x7B7C000000000000000000000000000000000012",
+ "mezoBridgeL1": "0xF6680EA3b480cA2b72D96ea13cCAF2cFd8e6908c"
+}

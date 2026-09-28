@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "deploymentId": "mainnet-2026-08-11",
+  "deployedAt": "2026-08-11T11:17:51+03:00",
+  "deployedSourceCommit": "0cffc1002567a206d47fa8fac5f7ce35cc69e734",
+  "codeHashAlgorithm": "keccak256(runtimeCode)",
+  "guardians": {
+    "ditto": "0xE7f61A4646307A36e0d0cFA9097Dc476A73522Be",
+    "mezo": "0x4371B6fF033EB8E586A022862Ac503A219f86167"
+  },
+  "chains": {
+    "mezo": {
+      "chainId": 31612,
+      "observedAtBlock": 11195721,
+      "observedBlockHash": "0x453996d8de5fe0b261b216fed7667b0f245696c30c17e35005ff6e7c9e78a3e1",
+      "contracts": [
+        {
+          "name": "DMUSDVault",
+          "address": "0x762a17f2B3164ea5010C1C88085AeAC8872957D0",
+          "proxy": true,
+          "runtimeCodeHash": "0x24d1b1f5279fb253eb83f6cb3dcdcd923b7a17f168cf2b0ab880ddc1ea7e5587",
+          "implementation": "0xdd2d7bc0a908cfba9dba214e82f21a816093b52c",
+          "implementationRuntimeCodeHash": "0x070e67258219df771bf6ef56cf09026ac7171f81c3f73f0f745c8533450cf4c3"
+        },
+        {
+          "name": "MezoOpsExecutor",
+          "address": "0xb08F6bac55d0058B11D74E0cF6A76EF4C2A43754",
+          "proxy": true,
+          "runtimeCodeHash": "0x79ec09359c33d2b11c4d1ea59e795ce482a04cd6c1f1a689230c911d13429a36",
+          "implementation": "0xe7402fd2af3230fb2e12c1b4c66aad26d17f427b",
+          "implementationRuntimeCodeHash": "0x602fd96c96242befb1e9dbda9b610b45dc36bbaa528ee1a09061e68015120ad4"
+        },
+        {
+          "name": "WithdrawalQueue",
+          "address": "0x9D72922Fd520154a2bE98D36033839874B274290",
+          "proxy": true,
+          "runtimeCodeHash": "0xe466aa00de515ea6ee3c8e3027cf5653d451d4e2f6527c27292d5f12a424b4b2",
+          "implementation": "0xc9aa381bc25b68551f28b1a3f9a2e01ff1aafbdf",
+          "implementationRuntimeCodeHash": "0x92443686efb8cd9c065ba2c897cf732fef26b63ac63d1990bf302ee4779ba3dc"
+        },
+        {
+          "name": "NAVConsumer",
+          "address": "0x40bb55996363e5Da6754A65fAB4F70fB520Ff99e",
+          "proxy": true,
+          "runtimeCodeHash": "0xe424d77b37695ff18699f42349b052317a6cadb91b93ac7cbb9db4208f8d6bf4",
+          "implementation": "0x734db4301f8bb677e5f34e6305c2206b8bcc4bdc",
+          "implementationRuntimeCodeHash": "0xeca373d1f2a610335acc545d1a792f1c63abf3aeacc110d37f2d8d20da698bf9"
+        },
+        {
+          "name": "BLSVerifier",
+          "address": "0x53CBa6eBc4c420447A74DE744B52A6b142f5e99a",
+          "proxy": false,
+          "runtimeCodeHash": "0x2f1530784cde4ba1353f710e2838b8d1b7fca441091f074ecc1ba54e665c45ce"
+        },
+        {
+          "name": "OperatorWhitelist",
+          "address": "0x8e9eB5e7Ab57d7569eb8a4fcB1c583c94f3396dd",
+          "proxy": false,
+          "runtimeCodeHash": "0xe3edb6f1e24d9f16421e18a79558416cb401898c6b5729870e244d30173ff200"
+        },
+        {
+          "name": "TigrisCLSwapAdapter",
+          "address": "0x20ce81d735639F5a5f9ee88227786E82821540D7",
+          "proxy": false,
+          "runtimeCodeHash": "0x9d0009e964b0d5e504da276d098be703c9797dd462974c5290cf03f17002ef73"
+        },
+        {
+          "name": "MezoAssetsBridgeAdapter",
+          "address": "0xE03d2DfB535662d2835210DB5909291C8Ccd78F9",
+          "proxy": false,
+          "runtimeCodeHash": "0x9aba865791a5b8c16a5480758dcb414448e303806908a0e28d299b8f697aa82f"
+        }
+      ],
+      "dependencies": {
+        "musd": "0xdD468A1DDc392dcdbEf6db6e34E89AA338F9F186",
+        "musdc": "0x04671C72Aab5AC02A03c1098314b1BB6B560c197",
+        "tigrisCLRouter": "0x37cDd11919ec3860eaD9efB8673d7476E5326225",
+        "tigrisCLPoolTickSpacing10": "0xCC372B7E15535aB225fe17c1075831D38ef7aC1a",
+        "tigrisQuoterV2": "0x4E56aF2d49D3D8F9a99155b31dd117ccDD545dC7",
+        "assetsBridgePrecompile": "0x7B7C000000000000000000000000000000000012"
+      }
+    },
+    "ethereum": {
+      "chainId": 1,
+      "observedAtBlock": 25775990,
+      "observedBlockHash": "0x51c1cb893fd95c45f8dfc9dc11f7f5b829a9683cce0939361bc1124d154e771a",
+      "contracts": [
+        {
+          "name": "BridgeReceiver",
+          "address": "0x7817548BE174C22DecDe831Ea9d514927fD0D286",
+          "proxy": true,
+          "runtimeCodeHash": "0xca5a146c62175451667173820f841c38f2a07d6aeb74181c12ea7405caf99bde",
+          "implementation": "0x8e9eb5e7ab57d7569eb8a4fcb1c583c94f3396dd",
+          "implementationRuntimeCodeHash": "0xa057740210b74ce21eb72d8af73952aea8840a24d16f14b4c7d113c02345cce1"
+        },
+        {
+          "name": "BLSVerifier",
+          "address": "0xC0dD691e7dA580cD75e84Ce789F5DEA341D1BA21",
+          "proxy": false,
+          "runtimeCodeHash": "0x637d8122e41bc8a8d04dbb9baaea0ccbf817858d47c376aa000c187d8de37d58"
+        },
+        {
+          "name": "OperatorWhitelist",
+          "address": "0xE03d2DfB535662d2835210DB5909291C8Ccd78F9",
+          "proxy": false,
+          "runtimeCodeHash": "0xe3edb6f1e24d9f16421e18a79558416cb401898c6b5729870e244d30173ff200"
+        },
+        {
+          "name": "EthereumMezoBridgeAdapter",
+          "address": "0x20ce81d735639F5a5f9ee88227786E82821540D7",
+          "proxy": false,
+          "runtimeCodeHash": "0xd5f4f2d812fe61d9b787d141946a2563f952d4c9f6ab6f327f8da997fdc9ef08"
+        },
+        {
+          "name": "ERC4626NoLockAdapter",
+          "address": "0x944C7F5e08686117a5Bf66bE56b2B4bae869642C",
+          "proxy": false,
+          "runtimeCodeHash": "0xf69d5e1967834812c99c808776504d97b3de71b2567517c16d5bcfff09ba2b7e"
+        }
+      ],
+      "dependencies": {
+        "usdc": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "sparkSavingsUSDC": "0x28B3a8fb53B741A8Fd78c0fb9A6B2393d896a43d",
+        "mezoBridgeL1Proxy": "0xF6680EA3b480cA2b72D96ea13cCAF2cFd8e6908c"
+      }
+    }
+  },
+  "undeployed": [
+    {
+      "name": "BuildHashRegistry",
+      "reason": "Deploy only as part of onboarding external operator #1"
+    }
+  ]
+}

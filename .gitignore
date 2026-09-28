@@ -1,0 +1,16 @@
+# Everything an operator's host produces. None of it belongs in the distribution, and two of these
+# would be a genuine incident: `secrets/` holds the BLS key that IS this seat's identity, and `.env`
+# holds the HMAC secret that authenticates it to the aggregator.
+node_modules/
+
+# Generated on this host, through this operator's own endpoints. Not shared, not committed --
+# a config or inventory copied between seats defeats the independence the seat exists to provide.
+config/
+secrets/
+
+# The partial-signature log and the reconciler's cursors: durable state, per host.
+*.db
+*.sqlite
+
+# Compose reads this automatically; it is where OPERATOR_SECRET lives.
+.env

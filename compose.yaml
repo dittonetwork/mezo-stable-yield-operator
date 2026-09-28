@@ -1,0 +1,104 @@
+# Reference deployment for ONE operator seat. Translate to Kubernetes or systemd if you prefer —
+# what Ditto supports is the software and configuration interface, not your infrastructure.
+#
+# WireGuard is deliberately NOT here. Every operator manages networking differently, and a tunnel
+# defined in someone else's compose file is a tunnel nobody owns. Bring your own; bind the operator
+# port to its address (OPERATOR_BIND below).
+
+name: ditto-operator
+
+services:
+  # Authors the `bridge` block of the NAV inventory. Starts FIRST and must reach both chain heads
+  # before the operator can agree with the rest of the set — until then this seat's canonical NAV
+  # differs and it denies every price-setting task. That is correct, and it looks like a broken seat.
+  reconciler:
+    image: ditto-operator:local
+    build: .
+    restart: unless-stopped
+    command: ["python3", "ops/reconciler/bridge-reconciler.py"]
+    environment:
+      RECON_ADDRESSES: /config/reconciler-addresses.json
+      # Template is INPUT and read-only; inventory and cursors are OUTPUT. Point them at one path and
+      # the reconciler re-reads its own output, and the audited-template property is gone.
+      RECON_TEMPLATE: /config/nav-inventory.json
+      # /var/lib/ditto-operator, NOT an invented /state path: this is where
+      # gen-external-operator-config.py points navAccounting.inventoryFile, so the operator finds it
+      # with no extra wiring. One canonical location beats two that must be kept in step.
+      RECON_INVENTORY: /var/lib/ditto-operator/nav-inventory.json
+      RECON_MIRROR: /var/lib/ditto-operator/nav-inventory.json
+      RECON_STATE: /var/lib/ditto-operator/fifo-cursors.json
+      # The reconciler reads the operator config for ONE thing, the finality policy it must agree
+      # with, and it exits FATAL if it cannot. Its default path is /etc/ditto-operator, which does
+      # not exist in this image; the config is mounted at /config. Missing until 2026-09-04 — the
+      # onboarding rehearsal was the first thing to start this service from this file.
+      RECON_OPERATOR_CONFIG: /config/operator-config.json
+      # Deployment blocks — `deployedAtBlock` in the deployment record Ditto handed you (the same
+      # file you passed as ADDRESSES_JSON). Nothing had ever bridged before them; without these a
+      # never-run seat starts ~1500 blocks back and silently misses anything older. REQUIRED, and
+      # deliberately not defaulted: a default would be one deployment's blocks, and a seat pointed
+      # at another deployment would inherit them silently.
+      RECON_START_MEZO: ${RECON_START_MEZO:?set RECON_START_MEZO — deployedAtBlock.mezo from the deployment record}
+      RECON_START_ETH: ${RECON_START_ETH:?set RECON_START_ETH — deployedAtBlock.eth from the deployment record}
+    volumes:
+      - ./config:/config:ro
+      - recon-state:/var/lib/ditto-operator
+
+  operator:
+    image: ditto-operator:local
+    build: .
+    restart: unless-stopped
+    depends_on: [reconciler]
+    environment:
+      OPERATOR_CONFIG: /config/operator-config.json
+      PARTIAL_SIG_DB: /sigs/partial-sigs.db
+      BLS_KEY_PATH: /run/secrets/operator.bls.key
+      PYTHON: /opt/venv/bin/python3
+      PORT: "4000"
+      # The process is loopback-only outside containers. Compose must opt into the container
+      # interface explicitly; host exposure is still constrained by OPERATOR_BIND below.
+      OPERATOR_LISTEN_HOST: "0.0.0.0"
+      OPERATOR_SECRET: ${OPERATOR_SECRET:?set OPERATOR_SECRET — this seat's own 64-hex HMAC secret}
+      # Optional smoke test, not a mandatory waiting period. With it set the seat performs the full
+      # independent verification and reports its verdict but creates no partial signature and loads
+      # no BLS key. Remove it once one proposal has been compared against the fleet.
+      OPERATOR_SHADOW_ONLY: ${OPERATOR_SHADOW_ONLY:-}
+    volumes:
+      - ./config:/config:ro
+      # Shared with the reconciler, READ-ONLY here: the operator consumes the inventory, never
+      # authors it. Read-only also means a compromised operator cannot forge its own NAV inputs.
+      - recon-state:/var/lib/ditto-operator:ro
+      - sig-state:/sigs             # separate: this seat's signature log is its own durable state
+      - ./secrets/operator.bls.key:/run/secrets/operator.bls.key:ro
+    ports:
+      # Bind to the WireGuard address ONLY. Defaulting to loopback is deliberate: a seat that
+      # accidentally listens on 0.0.0.0 is offering /sign to the internet, and HMAC is the only thing
+      # between it and a stranger's proposal.
+      - "${OPERATOR_BIND:-127.0.0.1}:4000:4000"
+
+  # One-shot utility container: the same image, so config generation, inventory derivation, key
+  # generation and the readiness check all run with the SAME node, python, py_ecc and cast the
+  # services use. Without it an operator needs that whole toolchain on the host, which is the
+  # requirement Compose was chosen to remove.
+  #
+  #   docker compose run --rm tools python3 ops/gen-external-operator-config.py
+  #   docker compose run --rm tools python3 ops/drills/signer.py keygen /secrets/operator.bls.key
+  #   docker compose run --rm tools ops/check-operator-ready.sh /var/lib/ditto-operator/nav-inventory.json
+  #
+  # `profiles` keeps it out of `docker compose up` — it is a tool, not a service.
+  tools:
+    image: ditto-operator:local
+    build: .
+    profiles: ["tools"]
+    entrypoint: []
+    command: ["true"]
+    environment:
+      ETC: /config
+      OPERATOR_CONFIG: /config/operator-config.json
+    volumes:
+      - ./config:/config
+      - ./secrets:/secrets
+      - recon-state:/var/lib/ditto-operator:ro
+
+volumes:
+  recon-state:
+  sig-state:

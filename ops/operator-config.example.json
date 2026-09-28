@@ -1,0 +1,41 @@
+{
+  "_comment": "Multichain operator config (2026-07-15, 'Полный вперёд'). One process, one legs map — this operator verifies/signs against every chain in .legs from a single OPERATOR_SECRET/BLS_KEY_PATH. Values below are the REAL live cross-chain pilot deployment (ops/testnet/deployments/2026-07-15-xchain-pilot/pilot.json) — copy and repoint for a fresh deployment, do not point production at this pilot.",
+  "legs": {
+    "mezo": {
+      "_comment": "Source leg — Mezo matsnet.",
+      "chainId": 31611,
+      "rpcUrl": "https://rpc.test.mezo.org",
+      "executor": "0xE5bA256d2f2fF07033E9B4B342ED2B081AAc8482",
+      "vault": "0x36a920f16Bb025e8b006E9107fc454c39D11fd52",
+      "nav": "0x2a401EfE8f3A6524d7A9808FAd27f23b1Cee1F36",
+      "queue": "0xA2cee3e924d314949EF340A1aaA7f867644Ed05e",
+      "swapAdapter": "0xf8210866b72A279BD84a89595ffe81bEabbAfcfF",
+      "musd": "0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503",
+      "musdc": "0xe1a26db653708A2AD8F824E92Db9852410e33A59",
+      "swapPool": "0xPENDING_TIGRIS_POOL_ADDRESS",
+      "_swapQuoterNote": "Tigris QuoterV2 for depth-aware min-out, and it is NOW MANDATORY (SHARED_SWAP_POLICY, ops/task-engine/threshold-config.mjs): with this empty, both the proposer and every operator refuse every swap-bearing task and capital stays idle. Mezo MAINNET 0x4E56aF2d49D3D8F9a99155b31dd117ccDD545dC7, matsnet 0x84771b080B440BB3Beb67489407F4B8f0552BfC8 (the value below, matching this file's matsnet legs -- REPOINT IT for mainnet). SLIPSTREAM ABI (int24 tickSpacing, not uint24 fee) -- the Uniswap V3 selector reverts on it. Set the SAME address on the aggregator and on every operator: they each quote independently and each bounds with what its own quoter says.",
+      "swapQuoter": "0x84771b080B440BB3Beb67489407F4B8f0552BfC8",
+      "swapTickSpacing": 10,
+      "verifier": "0x79a97b9bDeb499A188987d8D87077a66a1f5C2Ad"
+    },
+    "eth": {
+      "_comment": "Destination leg — Ethereum Sepolia. No trusted notifier: ALLOCATE is verified purely against this leg's own USDC receiver balance, read via eth_call (see ops/operator/verify.mjs). 2026-07-19: the prior additional Mezo-side BridgeSent eth_getLogs cross-check was removed — receiver balance is the sole and sufficient gate.",
+      "chainId": 11155111,
+      "rpcUrl": "https://ethereum-sepolia-rpc.publicnode.com",
+      "receiver": "0xe33080cE37804635A20E607a295b2d1DFf0AE977",
+      "usdc": "0x2dEe9e2ac7c361aB50C5D19111D2B60743C9E9b3",
+      "venueClassId": "0x6e6f2d6c6f636b00000000000000000000000000000000000000000000000000",
+      "verifier": "0xa78c23E4B1c3ABde39AFCFac8A62E96A3371fC69"
+    }
+  },
+  "_minOutPolicyNote": "2026-08-10. THE SLIPPAGE AND ROUND-TRIP POLICY IS NOT IN THIS FILE AT ALL. minOutBps, maxRoundTripLossBps and requireDepthAwareQuote live in SHARED_SWAP_POLICY (ops/task-engine/threshold-config.mjs), a CONSTANT that resolveTrackedThresholds overlays onto both the aggregator's and every operator's resolved config -- so there is exactly one visible source of these numbers and a host cannot restate, or contradict, any of them. They were briefly present here as ignored values, which is its own hazard: a field that looks settable and is not invites someone to 'fix' a bound by editing it. WHY A CONSTANT: the proposer floored min-out at minOutBps 50 while operators bounded with maxSlippageBps 100 -- two keys for one knob -- so a quorum would have co-signed a min-out twice as slack as the proposer builds, in the one check that stops a sandwich. maxSlippageBps is deleted everywhere. poolFeeBps STAYS here because it is the VENUE's fee tier (Tigris CL MUSD/mUSDC mainnet = 5) and only resolveMinOut's degraded branch reads it; depth-aware quoting is mandatory, so that branch is unreachable in production and this is a mock-pool-test value, not a live bound. REQUIRING DEPTH-AWARE QUOTES MAKES legs.mezo.swapQuoter MANDATORY on the aggregator AND every operator: with no quoter reachable both sides refuse every swap-bearing task and capital stays idle -- by design, and visible as placement-blocked / swap-back-blocked in the log.",
+  "poolFeeBps": 0,
+  "adminExpiryMaxSecs": 3600,
+  "_withdrawBatchSumThresholdNote": "The withdrawal batch's notional (openBatchShares * candidate navRay / 1e27) must cross this before an operator will co-sign closing it. Missing/0 = no gate. It lives here in the config layer rather than on-chain, and it is tracked in git (see ops/task-engine/threshold-config.mjs) so a host-local edit cannot widen it. Already-closed batches are exempt — the gate is about opening a settlement, not about finishing one.",
+  "withdrawBatchSumThreshold": "100000000000000000000",
+  "withdrawQueueMaxAgeSecs": "86400",
+  "_secretGeneration": "OPERATOR_SECRET (per-seat HMAC key, never shared) and BLS_KEY_PATH are supplied via environment/files, never in this config. Generate a secret with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"",
+  "_placementBufferFloorBpsNote": "The Mezo buffer floor, in bps of totalAssets. THIS IS THE ONLY FLOOR THAT EXISTS: the vault's own bufferFloorBps -- storage, initializer parameter and dual-org propose/confirm ceremony -- was deleted 2026-08-10 (owner: \"no need for guards\"), so nothing on chain holds a cushion back. It binds because the aggregator AND every operator apply the same placeableAfterBufferFloor(), and because the number is git-tracked (threshold-config.mjs) so a host-local edit to 0 cannot widen it without a commit. WHAT THE CHAIN STILL GUARANTEES regardless: placeableSurplus() nets closed-batch obligations and the open batch's shares marked at NAV, and _handlePlacement reverts ExceedsPlaceableSurplus -- placement can never strand liquidity a batch is counting on. That is solvency, and it is unconditional. This floor is about redemption LATENCY: placing through it loses nobody's money, it means the next withdrawal needs a venue unwind plus a bridge round trip instead of settling locally. THE RISK, stated plainly: four colluding operators, or a bug in the shared function, can now drain the buffer to exactly the reserved amount. Nothing underneath will stop it. A withdrawal arriving after that waits for an unwind rather than failing, so the exposure is delay, not loss.",
+  "placementBufferFloorBps": 1500,
+  "_thresholdNote": "APPROVED BY THE OWNER 2026-08-10: close a withdrawal batch once 100 MUSD of notional is queued, with 24 h as the liveness backstop for a queue that never reaches it. Amount-first by instruction -- the backstop is the floor of the redemption SLA, not the trigger. WHY A LOW TRIGGER IS RIGHT rather than a compromise: the 15% Mezo buffer is what keeps a withdrawal off Ethereum, so a buffer-covered close costs one signing round and ~$0.10 of gas -- no swap, no bridge, nothing to batch for. Ethereum deallocation/bridge-back/swap happen only for the exact remaining shortfall when the buffer is short. NOTE the buffer does NOT guarantee every withdrawal: repeated withdrawals can deplete it. Both keys are git-tracked, so this file binds them and a host cannot widen either. Supersedes the matsnet-era $12, which was never a mainnet decision."
+}

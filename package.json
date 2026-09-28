@@ -1,0 +1,19 @@
+{
+  "name": "mezo-stable-yield-operator",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Ditto x Mezo dMUSD operator seat \u2014 independent verification and BLS threshold signing.",
+  "license": "BUSL-1.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "sql.js": "1.14.2"
+  },
+  "scripts": {
+    "test": "find ops -name '*.test.mjs' -exec node --test {} + && python3 ops/reconciler/bridge-reconciler.test.py",
+    "start": "node ops/operator/server.mjs",
+    "ready": "./ops/check-operator-ready.sh"
+  }
+}

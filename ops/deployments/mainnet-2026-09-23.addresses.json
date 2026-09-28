@@ -1,0 +1,35 @@
+{
+ "_generated": "ops/deployment-addresses.py \u2014 derived from the manifest and the deploy config, corroborated on chain; regenerate, never edit",
+ "deployment": "mainnet-2026-09-23",
+ "commit": "0x22a2783baf3a4321a05245f71f9015c18db18499",
+ "chainIds": {
+  "mezo": 31612,
+  "eth": 1
+ },
+ "deployedAtBlock": {
+  "mezo": 12045502,
+  "eth": 26040402
+ },
+ "vault": "0x9171Cb787C3fEEbBC808D07CaB62B1d789CE14F8",
+ "executor": "0x398a3B42bb6634b4B4E7bB2f4CbF871C8d1151F6",
+ "queue": "0xeBA277be5AEdd2Bb2F90f81f01ea58f1cc959A0a",
+ "nav": "0x16270960d928B687A2dedC0235036CcbdaE03F8c",
+ "mezoVerifier": "0xb542AB6B9a4a34D4C52Abd29C291e754FFB1D6e3",
+ "mezoWhitelist": "0xBFcE174046De7Eca565Fb6Cca17f413Da9629604",
+ "swapAdapter": "0x04D4B796800b1704Ad043BD5889f882A80ceBb3B",
+ "mezoBridgeAdapter": "0xcf2299Fc9A47cD119288e045a1fff29A5f198a30",
+ "receiver": "0x73e97D42f341713e2ED10E55964C066d924a8106",
+ "ethVerifier": "0x43691E7a53AC551988B7aDa7c1e60ac6968d98E8",
+ "ethWhitelist": "0xcf2299Fc9A47cD119288e045a1fff29A5f198a30",
+ "venueAdapter": "0x4E9011545FDCE94238A5767057c32692A420ecE5",
+ "ethBridgeAdapter": "0x04D4B796800b1704Ad043BD5889f882A80ceBb3B",
+ "musd": "0xdD468A1DDc392dcdbEf6db6e34E89AA338F9F186",
+ "musdc": "0x04671C72Aab5AC02A03c1098314b1BB6B560c197",
+ "usdc": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+ "swapPool": "0xCC372B7E15535aB225fe17c1075831D38ef7aC1a",
+ "swapQuoter": "0x4E56aF2d49D3D8F9a99155b31dd117ccDD545dC7",
+ "sparkSavings": "0x28B3a8fb53B741A8Fd78c0fb9A6B2393d896a43d",
+ "venueClassId": "spark-savings",
+ "assetsBridge": "0x7B7C000000000000000000000000000000000012",
+ "mezoBridgeL1": "0xF6680EA3b480cA2b72D96ea13cCAF2cFd8e6908c"
+}
