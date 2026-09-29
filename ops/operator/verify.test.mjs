@@ -11,7 +11,9 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { verifyProposal, castChainReader } from "./verify.mjs";
+import { verifyProposal, castChainReader, usdcValuation } from "./verify.mjs";
+import { usdcExitRate, usdcToMusd, twapFloorOut } from "../task-engine/usdc-valuation.mjs";
+import { SHARED_NAV_POLICY } from "../task-engine/threshold-config.mjs";
 import { keccak256Hex } from "../task-engine/keccak.mjs";
 import { TaskType, calldataHash, _word as word } from "../task-engine/engine.mjs";
 
@@ -28,6 +30,8 @@ const MEZO_LEG = {
   musd: "0x00000000000000000000000000000000000000a4",
   musdc: "0x00000000000000000000000000000000000000a5",
   bridgeAdapter: "0x00000000000000000000000000000000000000a7",
+  swapPool: "0x00000000000000000000000000000000000000aa",
+  swapQuoter: "0x00000000000000000000000000000000000000ab",
 };
 const ETH_LEG = {
   chainId: ETH_CHAIN,
@@ -521,14 +525,83 @@ test("an unrecognised task type is REFUSED, not signed by default", async () => 
 
 // 6dp mUSDC in, 18dp MUSD out — the reverse of the shared `quote` default, which only models
 // the placement direction.
-const swapBackReader = (over = {}) => ({ quote: async (_a, _b, amt) => amt * 10n ** 12n, executorMusdcBalance: async () => 1000n * 10n ** 6n, ...over });
+// The pool as the swap-back cap reads it at the head: mean tick 276324 less the 5 bps fee prices mUSDC
+// at ~0.9995e12 MUSD wei per micro-unit, and a live 1,000 USDC probe agrees with it.
+const TWAP_EXIT = 999_500_000_000n;
+const poolAtHead = (probeRate = TWAP_EXIT) => ({
+  pinnedUintCall: async (_t, sig, args) => sig.startsWith("fee") ? 500n : sig.startsWith("tickSpacing") ? 10n
+    : sig.startsWith("quoteExactInputSingle") ? BigInt(args[2]) * probeRate : 0n,
+  pinnedAddressCall: async (_t, sig) => sig.startsWith("token0") ? MEZO_LEG.musdc : MEZO_LEG.musd,
+  pinnedTickCumulatives: async () => [0n, 276_324n * 1800n],
+});
+const swapBackReader = (over = {}) => ({
+  quote: async (_a, _b, amt) => amt * 10n ** 12n, executorMusdcBalance: async () => 1000n * 10n ** 6n, ...poolAtHead(), ...over,
+});
 const swapBack = (musdcIn, minMusdOut) => "0x" + word(musdcIn) + word(minMusdOut);
+// The TWAP exit rate exactly as a seat reads it from `poolAtHead`, and a depth quote `bps` under it.
+const headRate = await usdcExitRate({
+  reader: {
+    uintCall: (_l, t, sig, args) => poolAtHead().pinnedUintCall(t, sig, args),
+    addressCall: (_l, t, sig) => poolAtHead().pinnedAddressCall(t, sig),
+    tickCumulatives: () => poolAtHead().pinnedTickCumulatives(),
+  },
+  pool: MEZO_LEG.swapPool, quoter: MEZO_LEG.swapQuoter, musd: MEZO_LEG.musd, musdc: MEZO_LEG.musdc, block: "latest",
+  twapSecs: 1800, bandBps: 500, maxSpotDivergenceBps: 25, spotProbe: 1_000_000_000n,
+});
+const twapValue = (amt) => usdcToMusd(amt, 6, headRate);
+const quoteBelowTwap = (bps) => async (_a, _b, amt) => (twapValue(amt) * (10_000n - bps)) / 10_000n;
+// The min-out the proposer now signs: the slippage floor or the TWAP floor (2 bps inside the cap),
+// whichever is higher.
+const proposedSwapBack = (musdcIn, bps) => {
+  const slip = (((twapValue(musdcIn) * (10_000n - bps)) / 10_000n) * 9950n) / 10_000n;
+  const floor = twapFloorOut(musdcIn, headRate, 48n);
+  return swapBack(musdcIn, slip > floor ? slip : floor);
+};
 
 test("SWAP_USDC_TO_MUSD_ON_MEZO: signs a return-leg swap it would have proposed itself", async () => {
   const p = swapBack(100n * 10n ** 6n, (100n * 10n ** 18n * 9950n) / 10_000n);
   const t = bind(task({ taskType: TaskType.SWAP_USDC_TO_MUSD_ON_MEZO }), p);
   const v = await verifyProposal({ task: t, payload: p, cfg: CFG, chains: chainsFor(swapBackReader()) });
   assert.equal(v.ok, true, v.reason);
+});
+
+test("swap-back: independent funding floor rejects an underfunded final or split sale", async () => {
+  const held = 1000n * 10n ** 6n, buffer = 100n * 10n ** 18n;
+  const outstanding = buffer + held * 10n ** 12n;
+  for (const amount of [held, held - 1n, held / 2n]) {
+    const minimum = amount * 10n ** 12n;
+    const pins = [];
+    const verdict = async (min) => {
+      const p = swapBack(amount, min);
+      return verifyProposal({ task: bind(task({ taskType: TaskType.SWAP_USDC_TO_MUSD_ON_MEZO }), p), payload: p,
+        cfg: CFG, chains: chainsFor(swapBackReader({
+          executorMusdcBalance: async (block) => { pins.push(block); return held; },
+          withdrawalQueueTotalReserved: async (block) => { pins.push(block); return outstanding; },
+          mezoBufferBalance: async (block) => { pins.push(block); return buffer; },
+        })) });
+    };
+    const refused = await verdict(minimum - 1n);
+    assert.equal(refused.ok, false);
+    assert.match(refused.reason, /funding floor/);
+    const allowed = await verdict(minimum);
+    assert.equal(allowed.ok, true, allowed.reason);
+    assert.ok(pins.length >= 6);
+    assert.ok(pins.every((block) => block === 1000n), "funding reads must use one Mezo block");
+  }
+});
+
+test("swap-back: unreadable funding state cannot be treated as zero debt", async () => {
+  for (const over of [
+    { withdrawalQueueTotalReserved: async () => { throw new Error("RPC down"); } },
+    { withdrawalQueueTotalReserved: async () => null },
+    { mezoBufferBalance: async () => -1n },
+  ]) {
+    const p = swapBack(100n * 10n ** 6n, 100n * 10n ** 18n);
+    const v = await verifyProposal({ task: bind(task({ taskType: TaskType.SWAP_USDC_TO_MUSD_ON_MEZO }), p), payload: p,
+      cfg: CFG, chains: chainsFor(swapBackReader(over)) });
+    assert.equal(v.ok, false);
+    assert.match(v.reason, /funding/);
+  }
 });
 
 test("SWAP_USDC_TO_MUSD_ON_MEZO: REFUSES a starved min-out — it crosses a pool, so the sandwich bound applies", async () => {
@@ -545,6 +618,54 @@ test("SWAP_USDC_TO_MUSD_ON_MEZO: REFUSES swapping more mUSDC than the executor h
   const v = await verifyProposal({ task: t, payload: p, cfg: CFG, chains: chainsFor(swapBackReader()) });
   assert.equal(v.ok, false);
   assert.match(v.reason, /executor mUSDC balance/);
+});
+
+test("SWAP_USDC_TO_MUSD_ON_MEZO: signs a swap-back that lands within the cap under the pool's TWAP", async () => {
+  const p = proposedSwapBack(500n * 10n ** 6n, 40n);
+  const t = bind(task({ taskType: TaskType.SWAP_USDC_TO_MUSD_ON_MEZO }), p);
+  const v = await verifyProposal({ task: t, payload: p, cfg: CFG, chains: chainsFor(swapBackReader({ depthQuote: quoteBelowTwap(40n) })) });
+  assert.equal(v.ok, true, v.reason);
+});
+
+test("SWAP_USDC_TO_MUSD_ON_MEZO: REFUSES a swap-back past the cap even with an honest min-out — the rest waits", async () => {
+  // The min-out is exactly what the proposer would build from the quote, so the sandwich bound passes:
+  // only the cap can stop a swap that sells into the pool's cliff.
+  const p = proposedSwapBack(500n * 10n ** 6n, 60n);
+  const t = bind(task({ taskType: TaskType.SWAP_USDC_TO_MUSD_ON_MEZO }), p);
+  const v = await verifyProposal({ task: t, payload: p, cfg: CFG, chains: chainsFor(swapBackReader({ depthQuote: quoteBelowTwap(60n) })) });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /quotes \d+, under the pool's TWAP floor \d+ \(cap 50 bps\)/);
+});
+
+test("SWAP_USDC_TO_MUSD_ON_MEZO: REFUSES a signed min-out under the TWAP floor even when the quote is within the cap", async () => {
+  // Codex's repro, 2026-09-30: a quote at the cap passed it, and the usual 50 bps slippage under it
+  // was signed, so the swap could land ~100 bps under the TWAP. (49 here: exactly 50, rounded down,
+  // is already a wei under the exact floor and is refused on the quote.)
+  const musdcIn = 500n * 10n ** 6n;
+  const quote = quoteBelowTwap(49n);
+  const starved = swapBack(musdcIn, ((await quote(0, 0, musdcIn)) * 9950n) / 10_000n);
+  const floor = twapFloorOut(musdcIn, headRate, 50n);
+  const verdict = async (p) => verifyProposal({
+    task: bind(task({ taskType: TaskType.SWAP_USDC_TO_MUSD_ON_MEZO }), p), payload: p, cfg: CFG,
+    chains: chainsFor(swapBackReader({ depthQuote: quote })),
+  });
+  const v = await verdict(starved);
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /minMusdOut \d+ is under the pool's TWAP floor/);
+  // Exact amounts at the boundary: the floor itself signs, one wei under it does not.
+  assert.equal((await verdict(swapBack(musdcIn, floor))).ok, true);
+  assert.equal((await verdict(swapBack(musdcIn, floor - 1n))).ok, false);
+});
+
+test("SWAP_USDC_TO_MUSD_ON_MEZO: REFUSES while the pool cannot be priced (spot off its TWAP)", async () => {
+  const p = proposedSwapBack(500n * 10n ** 6n, 0n);
+  const t = bind(task({ taskType: TaskType.SWAP_USDC_TO_MUSD_ON_MEZO }), p);
+  const v = await verifyProposal({
+    task: t, payload: p, cfg: CFG,
+    chains: chainsFor(swapBackReader({ depthQuote: quoteBelowTwap(0n), ...poolAtHead(990_000_000_000n) })),
+  });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /swap-back held: .*diverges from the 1800s TWAP/);
 });
 
 test("SWAP_USDC_TO_MUSD_ON_MEZO: is swap-bearing — an unbounded expiry/maxBlock is refused", async () => {
@@ -854,9 +975,16 @@ function canonicalChains(backing = 1_000_000n, fail = false) {
         if (fail) throw new Error("rpc unavailable");
         return token === MEZO_LEG.musd && owner === MEZO_LEG.vault ? backing : 0n;
       },
-      pinnedUintCall: async (_target, sig) => sig.startsWith("totalSupply") ? 999_000n : sig.startsWith("VIRTUAL_SHARES") ? 1000n : 0n,
-      pinnedAddressCall: async (_target, sig) => sig.startsWith("executor") ? MEZO_LEG.executor : ETH_LEG.usdc,
+      pinnedUintCall: async (_target, sig, args) => sig.startsWith("totalSupply") ? 999_000n
+        : sig.startsWith("VIRTUAL_SHARES") ? 1000n : sig.startsWith("fee") ? 500n
+        : sig.startsWith("tickSpacing") ? 10n
+        // Consistent with the fixture's TWAP (mean tick 276324 less the fee, ~0.9995).
+        : sig.startsWith("quoteExactInputSingle") ? BigInt(args[2]) * 999_500_000_000n : 0n,
+      pinnedAddressCall: async (_target, sig) => sig.startsWith("executor") ? MEZO_LEG.executor
+        : sig.startsWith("token0") ? MEZO_LEG.musdc : sig.startsWith("token1") ? MEZO_LEG.musd : ETH_LEG.usdc,
       pinnedUnbondState: async () => ({ requested: 0n, claimable: 0n }),
+      // Mean tick 276324 prices mUSDC at ~1e12 MUSD wei per micro-unit, i.e. near par.
+      pinnedTickCumulatives: async () => [0n, 276_324n * 1800n],
     }),
     [String(ETH_CHAIN)]: ethReader({
       snapshotPin: commonPin(5000n, ETH_HASH, NOW - 5n, 5012n),
@@ -953,6 +1081,66 @@ test("canonical: a move far outside the OLD 100bps band is signed when it exactl
   // never for "deviates from the band", which no longer exists.
   assert.doesNotMatch(String(v.reason ?? ""), /operational guard|beyond the band|deviates/,
     "no band may refuse a canonical NAV any more");
+});
+
+// USDC valued at the pool's exit rate (2026-09-29). The executor holds 1 mUSDC and nothing else,
+// so the whole NAV is that one conversion and the two conventions give different numbers.
+function usdcHeldChains() {
+  const chains = canonicalChains(0n);
+  const mezo = chains[String(MEZO_CHAIN)];
+  mezo.pinnedTokenBalance = async (token, owner) =>
+    token === MEZO_LEG.musdc && owner === MEZO_LEG.executor ? 1_000_000n : 0n;
+  mezo.pinnedUintCall = async (_target, sig, args) => sig.startsWith("totalSupply") ? 999_000n
+    : sig.startsWith("VIRTUAL_SHARES") ? 1000n : sig.startsWith("fee") ? 500n
+    : sig.startsWith("tickSpacing") ? 10n
+    : sig.startsWith("quoteExactInputSingle") ? BigInt(args[2]) * 999_500_000_000n : 0n;
+  return chains;
+}
+const postNav = (navRay) => "0x" + word(4n) + word(navRay) + word(1000n) + word(5000n) + word(MEZO_HASH) + word(ETH_HASH);
+async function exitRateNav() {
+  const rate = await usdcExitRate({
+    reader: {
+      addressCall: async (_l, _t, sig) => sig.startsWith("token0") ? MEZO_LEG.musdc : MEZO_LEG.musd,
+      uintCall: async (_l, _t, sig, args) => sig.startsWith("fee") ? 500n : sig.startsWith("tickSpacing") ? 10n
+        : BigInt(args[2]) * 999_500_000_000n,
+      tickCumulatives: async () => [0n, 276_324n * 1800n],
+    },
+    ...usdcValuation(MEZO_LEG), musd: MEZO_LEG.musd, musdc: MEZO_LEG.musdc, block: 1000n,
+  });
+  return (usdcToMusd(1_000_000n, 6, rate) * RAY) / 1_000_000n; // supply 999_000 + 1000 virtual
+}
+
+test("canonical: USDC is priced at the operator's own pool exit rate, and a 1:1 NAV is refused", async () => {
+  const exit = await exitRateNav();
+  const par = (10n ** 18n * RAY) / 1_000_000n;
+  assert.notEqual(exit, par);
+  for (const [navRay, expectOk] of [[exit, true], [par, false]]) {
+    const p = postNav(navRay);
+    const t = bind(task({ taskType: TaskType.POST_NAV, maxBlock: 1020n, expiry: NOW + 300n }), p);
+    const v = await verifyProposal({ task: t, payload: p, cfg: CANONICAL_CFG, chains: usdcHeldChains() });
+    assert.equal(v.ok, expectOk, String(v.reason));
+    if (!expectOk) assert.match(v.reason, /does not exactly match pinned canonical NAV/);
+  }
+});
+
+test("canonical: an operator with no pool of its own refuses to price rather than falls back to 1:1", async () => {
+  const noPool = { ...MEZO_LEG };
+  delete noPool.swapPool;
+  const cfg = { ...CANONICAL_CFG, legs: { ...CANONICAL_CFG.legs, mezo: noPool } };
+  const p = postNav(await exitRateNav());
+  const t = bind(task({ taskType: TaskType.POST_NAV, maxBlock: 1020n, expiry: NOW + 300n }), p);
+  const v = await verifyProposal({ task: t, payload: p, cfg, chains: usdcHeldChains() });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /canonical NAV unreadable: usdc valuation: swap pool address is required/);
+});
+
+test("the operator's valuation policy is the git-tracked one, bound to its own pool", () => {
+  assert.deepEqual(usdcValuation(MEZO_LEG), {
+    pool: MEZO_LEG.swapPool, quoter: MEZO_LEG.swapQuoter,
+    twapSecs: SHARED_NAV_POLICY.usdcExitTwapSecs, bandBps: SHARED_NAV_POLICY.usdcExitBandBps,
+    maxSpotDivergenceBps: SHARED_NAV_POLICY.usdcSpotDivergenceBps, spotProbe: SHARED_NAV_POLICY.usdcSpotProbe,
+    maxLiquidationImpactBps: SHARED_NAV_POLICY.usdcMaxLiquidationImpactBps,
+  });
 });
 
 test("canonical: a NAV that does NOT match the pinned recomputation is still refused", async () => {

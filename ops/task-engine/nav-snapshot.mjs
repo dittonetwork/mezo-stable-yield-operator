@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 import { computeOwnershipNav, integerValue } from "./nav-estimator.mjs";
+import { usdcExitRate, usdcExitImpact, usdcMarkRate } from "./usdc-valuation.mjs";
 
 const ZERO = /^0x0+$/i;
 
@@ -189,8 +190,15 @@ export function validateBridgePins(bridge, pins) {
 
 }
 
-/** Value every custody location at pinned blocks, never at latest. */
-export async function recomputeCanonicalNav({ reader, pins, inventory, policy = {} }) {
+/**
+ * Value every custody location at pinned blocks, never at latest.
+ *
+ * `valuation` (usdc-valuation.mjs valuationFromPolicy) values USDC-family assets at the pool's
+ * time-weighted exit rate into MUSD, refusing when the pool is out of band or recently moved. The
+ * aggregator and every operator pass it; omitting it keeps the old 1:1 convention, which only
+ * tests and offline tooling still rely on.
+ */
+export async function recomputeCanonicalNav({ reader, pins, inventory, policy = {}, valuation }) {
   const p = {
     maxSnapshotAgeSecs: policy.maxSnapshotAgeSecs ?? 180,
     maxCrossChainSkewSecs: policy.maxCrossChainSkewSecs ?? 30,
@@ -235,15 +243,19 @@ export async function recomputeCanonicalNav({ reader, pins, inventory, policy = 
     throw new Error("inventory virtual shares disagree with pinned vault");
   }
 
+  const usdcRate = valuation
+    ? await usdcExitRate({ reader, ...valuation, musd, musdc, block: pins.mezo.number })
+    : null;
+
   const assets = [];
   const physicalLocations = new Set();
-  const addBalances = async (leg, token, decimals, owners, block) => {
+  const addBalances = async (leg, token, decimals, owners, block, usdc) => {
     for (const owner of owners ?? []) {
       requireAddress(owner.address, owner.id);
       const physical = `${leg}:${token.toLowerCase()}:${owner.address.toLowerCase()}`;
       if (physicalLocations.has(physical)) throw new Error(`duplicate physical custody location ${physical}`);
       physicalLocations.add(physical);
-      assets.push({ id: owner.id, amount: await reader.tokenBalance(leg, token, owner.address, block), decimals });
+      assets.push({ id: owner.id, amount: await reader.tokenBalance(leg, token, owner.address, block), decimals, usdc });
     }
   };
   // The withdrawal queue is NEVER a MUSD asset owner, and listing it silently overstates NAV.
@@ -270,9 +282,9 @@ export async function recomputeCanonicalNav({ reader, pins, inventory, policy = 
       }
     }
   }
-  await addBalances("mezo", musd, 18, inventory.mezo?.musdOwners, pins.mezo.number);
-  await addBalances("mezo", musdc, 6, inventory.mezo?.musdcOwners, pins.mezo.number);
-  await addBalances("eth", usdc, 6, inventory.ethereum?.usdcOwners, pins.eth.number);
+  await addBalances("mezo", musd, 18, inventory.mezo?.musdOwners, pins.mezo.number, false);
+  await addBalances("mezo", musdc, 6, inventory.mezo?.musdcOwners, pins.mezo.number, true);
+  await addBalances("eth", usdc, 6, inventory.ethereum?.usdcOwners, pins.eth.number, true);
 
   // The `asset:withdraw-advance` term that used to live here is gone with NET_CLEAR (2026-08-08).
   // It corrected for a batch whose shares were paid for but not yet burned, which only happened
@@ -323,7 +335,7 @@ export async function recomputeCanonicalNav({ reader, pins, inventory, policy = 
     const claimable = BigInt(state.claimable);
     const direct = BigInt(await reader.tokenBalance("eth", usdc, address, pins.eth.number));
     if (direct < claimable) throw new Error(`${adapter.id}: direct underlying below reported claimable`);
-    assets.push({ id: `${adapter.id}:managed`, amount: managed, decimals: 6 });
+    assets.push({ id: `${adapter.id}:managed`, amount: managed, decimals: 6, usdc: true });
     if (registryMode === "onchain") {
       // Only historical ticket buckets on the receiver price pending unbonds in this mode.
       // Accept the old generated zero placeholder, but refuse an attempted local override.
@@ -348,16 +360,16 @@ export async function recomputeCanonicalNav({ reader, pins, inventory, policy = 
           "eth", receiver, "pendingUnbondByAdapterAndHaircut(address,uint16)(uint256)",
           [address, ticketHaircut], pins.eth.number,
         ));
-        if (amount !== 0n) assets.push({ id: `${adapter.id}:pending:${ticketHaircut}`, amount, decimals: 6, haircutBps: ticketHaircut });
+        if (amount !== 0n) assets.push({ id: `${adapter.id}:pending:${ticketHaircut}`, amount, decimals: 6, haircutBps: ticketHaircut, usdc: true });
         haircutPending += amount;
       }
       if (haircutPending !== receiverPendingForAdapter) throw new Error(`${adapter.id}: pending haircut buckets do not reconcile`);
     } else {
       const haircutBps = BigInt(adapter.navHaircutBps);
-      assets.push({ id: `${adapter.id}:requested`, amount: requested, decimals: 6, haircutBps });
-      assets.push({ id: `${adapter.id}:claimable`, amount: claimable, decimals: 6, haircutBps });
+      assets.push({ id: `${adapter.id}:requested`, amount: requested, decimals: 6, haircutBps, usdc: true });
+      assets.push({ id: `${adapter.id}:claimable`, amount: claimable, decimals: 6, haircutBps, usdc: true });
     }
-    assets.push({ id: `${adapter.id}:underlying-dust`, amount: direct - claimable, decimals: 6 });
+    assets.push({ id: `${adapter.id}:underlying-dust`, amount: direct - claimable, decimals: 6, usdc: true });
     adapterPending += requested + claimable;
   }
 
@@ -370,11 +382,15 @@ export async function recomputeCanonicalNav({ reader, pins, inventory, policy = 
     if (transfer.status !== "in-flight" || transfer.attribution !== "protocol") {
       throw new Error(`${transfer.id}: unresolved bridge transfer state`);
     }
+    // Only mUSDC/USDC cross the native bridge (MUSD is not bridgeable there), so a transfer in
+    // the air is USDC-family; anything else would be an inventory this code does not understand.
+    if (Number(transfer.decimals) !== 6) throw new Error(`${transfer.id}: in-flight transfer is not a 6-decimal USDC-family amount`);
     assets.push({
       id: `bridge:${transfer.id}`,
       amount: transfer.expectedAmount,
       decimals: transfer.decimals,
       haircutBps: transfer.haircutBps ?? 0,
+      usdc: true,
     });
   }
 
@@ -383,6 +399,16 @@ export async function recomputeCanonicalNav({ reader, pins, inventory, policy = 
     { id: "liability:withdraw-reserved", amount: await reader.uintCall("mezo", mq.withdrawalQueue, "totalReserved()(uint256)", [], pins.mezo.number), decimals: 18 },
   ];
   const totalSupply = await reader.uintCall("mezo", mq.vault, "totalSupply()(uint256)", [], pins.mezo.number);
+  // The whole USDC position, quoted at the pinned block, and the mark it sets (usdcMarkRate).
+  const usdcExit = usdcRate
+    ? await usdcExitImpact({
+        reader, quoter: valuation.quoter, musd, musdc, block: pins.mezo.number, tickSpacing: usdcRate.tickSpacing,
+        amount: assets.filter((a) => a.usdc).reduce((sum, a) => sum + BigInt(a.amount), 0n), rate: usdcRate,
+      })
+    : null;
+  const usdcMark = usdcExit
+    ? usdcMarkRate({ rate: usdcRate, amount: usdcExit.amount, quotedOut: usdcExit.quotedOut, maxImpactBps: valuation.maxLiquidationImpactBps })
+    : null;
   const snapshot = {
     inventoryComplete: true,
     bridgeAttributionCertain: true,
@@ -390,8 +416,9 @@ export async function recomputeCanonicalNav({ reader, pins, inventory, policy = 
     liabilities,
     totalSupply,
     virtualShares,
+    usdcRate: usdcMark,
   };
-  const result = { ...computeOwnershipNav(snapshot), snapshot, pins };
+  const result = { ...computeOwnershipNav(snapshot), snapshot, pins, usdcRate, usdcExit, usdcMark };
   await Promise.all([reader.confirmPin("mezo", pins.mezo), reader.confirmPin("eth", pins.eth)]);
   return result;
 }

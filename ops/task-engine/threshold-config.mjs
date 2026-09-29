@@ -44,6 +44,11 @@ export const SHARED_SWAP_POLICY = {
   // omits both the fee and the impact, so the floor derived from it is not a floor. With no quoter
   // reachable, both sides refuse to sign rather than quietly bound with a number that cannot bound.
   requireDepthAwareQuote: true,
+  // Owner decision 2026-09-29: a swap-back may land at most this far below the pool's 30-minute
+  // exit rate, the rate NAV values mUSDC at (usdc-valuation.mjs capSwapBack). The pool is flat to
+  // ~3 bps up to its MUSD inventory (~165k after Mezo's placement) and 100+ bps past it, so this
+  // binds only on an exit larger than the pool can absorb; the rest waits for the pool to refill.
+  maxSwapBackImpactBps: 50,
 };
 
 // The economic minimum for a Mezo -> Ethereum deployment, in MUSD wei. ONE value, enforced by the
@@ -58,6 +63,38 @@ export const SHARED_SWAP_POLICY = {
 // not a guaranteed break-even or APY. Both proposer and all seats must deploy the same source.
 export const SHARED_PLACEMENT_POLICY = {
   minEconomicPlacementMusd: 500n * 10n ** 18n,
+};
+
+// How canonical NAV values USDC-family assets (Ethereum USDC, Mezo mUSDC) in MUSD. ONE value for
+// the aggregator and every operator: NAV is signed on an exact match, so a seat on a different
+// window or limit simply refuses every price-setting round.
+//
+// Claims are MUSD, so USDC is worth what it converts back into: the Tigris pool's exit rate, from
+// its mean tick over `usdcExitTwapSecs`, less the pool fee (usdc-valuation.mjs). Valuing it at 1:1
+// while MUSD trades ~0.9% below par made every depositor who left eat the entry discount while
+// whoever stayed collected the exit premium.
+//
+// Every limit here REFUSES the round; none substitutes a price. `usdcExitBandBps` (owner decision
+// 2026-09-29: 5%) is how far from par the rate may be before a person has to look — a depeg that
+// large is not something to price automatically. `usdcSpotDivergenceBps` bounds the gap between a
+// live quote for `usdcSpotProbe` USDC and the TWAP: the peg moved 0.9908-0.9917 over seven weeks,
+// so 25 bps is far outside normal drift, while a pool pushed for a few minutes shows up either in
+// spot (still pushed) or in the TWAP (pushed and released). Requires the pool to keep enough
+// observations to cover the window (see the rollout runbook).
+//
+// The position is then MARKED at what selling all of it fetches now (the pinned-block quote), never
+// above the TWAP value. Marked at the TWAP alone, a batch taking (nearly) the whole vault owed more
+// than selling everything returns, with nobody left to absorb the execution cost, and a batch clears
+// in one payment (Codex, 2026-09-29). Nothing raises the mark: when the quote is more than
+// `usdcMaxLiquidationImpactBps` under the TWAP the price REFUSES and the close waits for liquidity
+// (Codex, 2026-09-30 — a floor there was a promised sale price, not a value). The same number as the
+// swap-back cap, so what NAV will price and what a swap-back may realise are one bound.
+export const SHARED_NAV_POLICY = {
+  usdcExitTwapSecs: 1800,
+  usdcExitBandBps: 500,
+  usdcSpotDivergenceBps: 25,
+  usdcSpotProbe: 1_000_000_000n, // 1,000 USDC
+  usdcMaxLiquidationImpactBps: SHARED_SWAP_POLICY.maxSwapBackImpactBps,
 };
 
 export function resolveTrackedThresholds(readFileSyncFn, trackedConfigPath) {

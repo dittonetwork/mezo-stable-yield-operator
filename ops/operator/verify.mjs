@@ -44,13 +44,14 @@ import { keccak256Hex } from "../task-engine/keccak.mjs";
 import { TaskType, encodeTask, isFundableBatchStatus, heartbeatFields, HEARTBEAT_INTERVAL, HEARTBEAT_TTL } from "../task-engine/engine.mjs";
 import { computeNavRay, checkNavWithinGuard, navGuardBand, scaleAssetAmount } from "../task-engine/nav-estimator.mjs";
 import { recomputeCanonicalNav } from "../task-engine/nav-snapshot.mjs";
-import { rpcChainReader } from "../task-engine/rpc-reader.mjs";
+import { rpcChainReader, decodeWords, decodeTickCumulatives } from "../task-engine/rpc-reader.mjs";
+import { valuationFromPolicy, usdcExitRate, twapFloorOut } from "../task-engine/usdc-valuation.mjs";
 import {
   resolveMinOut, SpotQuoteRefused, QUOTER_V2_SIG, DEFAULT_TICK_SPACING,
   roundTripQuote, evaluateRoundTrip,
 } from "../task-engine/swap-quote.mjs";
-import { placeableAfterBufferFloor, evaluateEconomicMinimum } from "../task-engine/engine.mjs";
-import { SHARED_SWAP_POLICY, SHARED_PLACEMENT_POLICY } from "../task-engine/threshold-config.mjs";
+import { placeableAfterBufferFloor, evaluateEconomicMinimum, swapBackFundingFloor } from "../task-engine/engine.mjs";
+import { SHARED_SWAP_POLICY, SHARED_PLACEMENT_POLICY, SHARED_NAV_POLICY } from "../task-engine/threshold-config.mjs";
 
 const ETH_LEG = new Set([TaskType.ALLOCATE, TaskType.DEALLOCATE, TaskType.BRIDGE_BACK]);
 const SWAP_BEARING = new Set([TaskType.SWAP_MUSD_TO_USDC_ON_MEZO_N_BRIDGE_TO_ETH, TaskType.SWAP_USDC_TO_MUSD_ON_MEZO]);
@@ -133,6 +134,9 @@ function assertInventoryMatchesLegs(inventory, mezoLeg, ethLeg) {
   }
 }
 
+/** The git-tracked USDC valuation policy, bound to THIS operator's own pool — never the proposer's. */
+export const usdcValuation = (mezoLeg) => valuationFromPolicy(mezoLeg, SHARED_NAV_POLICY);
+
 async function computePinnedCanonicalNav(cfg, chains, mezoBlock, ethBlock, mezoHash, ethHash) {
   const mezoEntry = Object.entries(cfg.legs).find(([, l]) => l.vault && l.executor);
   const ethEntry = Object.entries(cfg.legs).find(([, l]) => l.receiver && l.usdc);
@@ -163,6 +167,7 @@ async function computePinnedCanonicalNav(cfg, chains, mezoBlock, ethBlock, mezoH
     uintCall: (leg, target, sig, args, block) => byName[leg].pinnedUintCall(target, sig, args, ref(leg, block)),
     addressCall: (leg, target, sig, args, block) => byName[leg].pinnedAddressCall(target, sig, args, ref(leg, block)),
     unbondState: (leg, adapter, block) => byName[leg].pinnedUnbondState(adapter, ref(leg, block)),
+    tickCumulatives: (leg, pool, secondsAgo, block) => byName[leg].pinnedTickCumulatives(pool, secondsAgo, ref(leg, block)),
     confirmPin: (leg, pin) => byName[leg].confirmSnapshotPin(pin),
   };
   return (await recomputeCanonicalNav({
@@ -170,6 +175,7 @@ async function computePinnedCanonicalNav(cfg, chains, mezoBlock, ethBlock, mezoH
     pins: { mezo: mezoPin, eth: ethPin },
     inventory: cfg.navAccounting.inventory,
     policy: cfg.navAccounting.policy,
+    valuation: usdcValuation(mezoLeg),
   })).navRay;
 }
 
@@ -592,11 +598,56 @@ export async function verifyProposal({ task, payload, cfg, chains }) {
       // pool, so it carries the same sandwich bound as SWAP_MUSD_TO_USDC_ON_MEZO_N_BRIDGE_TO_ETH.
       const [musdcIn, minMusdOut] = words(payload, 2);
       if (musdcIn === 0n) return deny("swap-back of zero");
-      const held = await chain.executorMusdcBalance();
+      let held, fundingFloor;
+      try {
+        // One snapshot of CLOSED debt and physical balances, independently of the proposer.
+        const block = await chain.blockNumber();
+        if (!isUint(block, 256)) throw new Error("invalid funding block");
+        held = await chain.executorMusdcBalance(block);
+        if (isUint(held, 256) && musdcIn > held) return deny(`swap-back ${musdcIn} > executor mUSDC balance ${held}`);
+        fundingFloor = swapBackFundingFloor({ amount: musdcIn, held,
+          outstanding: await chain.withdrawalQueueTotalReserved(block),
+          buffer: await chain.mezoBufferBalance(block),
+        });
+      } catch (e) {
+        return deny(`swap-back funding state unreadable: ${e.message}`);
+      }
       if (musdcIn > held) return deny(`swap-back ${musdcIn} > executor mUSDC balance ${held}`);
-      const { floor, denyReason } = await swapFloor(leg.musdc, leg.musd, musdcIn, "swap-back");
+      const { floor, denyReason, quotedOut, depthAware } = await swapFloor(leg.musdc, leg.musd, musdcIn, "swap-back");
       if (denyReason) return deny(denyReason);
       if (minMusdOut < floor) return deny(`minMusdOut ${minMusdOut} below my quote floor ${floor}`);
+      if (minMusdOut < fundingFloor || quotedOut < fundingFloor) {
+        return deny(`swap-back funding floor ${fundingFloor} exceeds minMusdOut ${minMusdOut} or quote ${quotedOut}; wait for backing or price recovery`);
+      }
+      // The cap (usdc-valuation.mjs capSwapBack), against THIS seat's own read of the pool's TWAP
+      // exit rate at the head. Every NAV refusal (band, spot off the TWAP, short window) holds the
+      // swap too: the pool is not to be sold into while it cannot be priced.
+      let rate;
+      try {
+        rate = await usdcExitRate({
+          reader: {
+            uintCall: (_leg, target, sig, args) => chain.pinnedUintCall(target, sig, args, "latest"),
+            addressCall: (_leg, target, sig, args) => chain.pinnedAddressCall(target, sig, args, "latest"),
+            tickCumulatives: (_leg, pool, secondsAgo) => chain.pinnedTickCumulatives(pool, secondsAgo, "latest"),
+          },
+          ...usdcValuation(leg), musd: leg.musd, musdc: leg.musdc, block: "latest",
+        });
+      } catch (e) {
+        return deny(`swap-back held: ${e.message}`);
+      }
+      // In exact amounts, on the SIGNED min-out as well as the quote: bounding only the quote let a
+      // min-out another 50 bps lower through, so a swap could land ~100 bps under the TWAP
+      // (Codex, 2026-09-30).
+      const cap = BigInt(cfg.maxSwapBackImpactBps ?? SHARED_SWAP_POLICY.maxSwapBackImpactBps);
+      const twapFloor = twapFloorOut(musdcIn, rate, cap);
+      if (!depthAware) return deny("swap-back cap needs a depth-aware quote; a mid cannot show size impact");
+      if (quotedOut < twapFloor) {
+        return deny(`swap-back of ${musdcIn} quotes ${quotedOut}, under the pool's TWAP floor ${twapFloor} `
+          + `(cap ${cap} bps); the rest must wait for the pool to refill`);
+      }
+      if (minMusdOut < twapFloor) {
+        return deny(`minMusdOut ${minMusdOut} is under the pool's TWAP floor ${twapFloor} (cap ${cap} bps)`);
+      }
       return ok();
     }
     case TaskType.CLEAR_BATCH: {
@@ -673,6 +724,8 @@ export function castChainReader(cast, legCfg) {
     pinnedAddressCall: async (target, sig, args, block) => (await cast(...pinnedArgs(target, sig, args, block))).split(/\s/)[0],
     pinnedTokenDecimals: async (token, block) => u(...pinnedArgs(token, "decimals()(uint8)", [], block)),
     pinnedTokenBalance: async (token, owner, block) => u(...pinnedArgs(token, "balanceOf(address)(uint256)", [owner], block)),
+    pinnedTickCumulatives: async (pool, secondsAgo, block) =>
+      decodeTickCumulatives(decodeWords((await cast(...pinnedArgs(pool, "observe(uint32[])", [`[${secondsAgo},0]`], block))).trim())),
     pinnedUnbondState: async (adapter, block) => {
       const raw = await cast(...pinnedArgs(adapter, "unbondState()((uint256,uint64,uint256))", [], block));
       const f = raw.replace(/[()]/g, "").split(",").map((v) => v.trim().split(/\s/)[0]);

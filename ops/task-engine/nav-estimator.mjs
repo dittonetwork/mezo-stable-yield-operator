@@ -17,6 +17,8 @@
 //     the exact same cross-multiplication as NAVConsumer.postNAV's require, so the two never
 //     disagree at a boundary — this is a strictly TIGHTER pre-filter, not a different rule.
 
+import { usdcToMusd } from "./usdc-valuation.mjs";
+
 export const DEFAULT_GUARD_UPPER_BPS = 100n;
 export const DEFAULT_GUARD_LOWER_BPS = 40n;
 export const ACCOUNTING_DECIMALS = 18;
@@ -62,7 +64,12 @@ export function computeOwnershipNav(snapshot) {
   const sum = (entries, liability) => entries.reduce((total, entry) => {
     if (!entry?.id || seen.has(entry.id)) throw new Error(`duplicate or missing NAV location id: ${entry?.id ?? ""}`);
     seen.add(entry.id);
-    const normalized = normalizeTo18(entry.amount, entry.decimals, entry.id);
+    if (liability && entry.usdc) throw new Error(`${entry.id}: liabilities are MUSD`);
+    // USDC-family assets are worth what they convert back into MUSD (usdc-valuation.mjs) when the
+    // snapshot carries that rate; without one they stay at 1:1, the pre-2026-09-29 convention.
+    const normalized = entry.usdc && snapshot.usdcRate
+      ? usdcToMusd(entry.amount, entry.decimals, snapshot.usdcRate, entry.id)
+      : normalizeTo18(entry.amount, entry.decimals, entry.id);
     if (liability && entry.haircutBps !== undefined) throw new Error(`${entry.id}: liability cannot carry a haircut`);
     const haircutBps = BigInt(entry.haircutBps ?? 0);
     if (haircutBps < 0n || haircutBps > 10_000n) throw new Error(`${entry.id}: invalid haircutBps`);

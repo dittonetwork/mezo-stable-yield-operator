@@ -296,6 +296,49 @@ export function unbondShortfall(s) {
 }
 
 /**
+ * Currency conversion for the withdrawal return leg, at the EXECUTABLE rate. The obligation is
+ * MUSD fixed at batch close; what comes home is USDC swapped back through the pool. Converting by
+ * decimals alone (1 USDC = 1 MUSD) stopped being consistent once NAV valued USDC at the pool's exit
+ * rate: a near-total exit then asked the venue for more USDC than it holds, and the operators —
+ * correctly — refused the DEALLOCATE, so a solvent vault could not pay.
+ *
+ * `quotedOut` is the depth-aware quote for `probe` venue units into MUSD. USDC already on its way
+ * (pending unbond, bridge escrow, executor mUSDC) is valued at that rate; a MUSD gap is converted
+ * back with the shared min-out margin on top, so the swap-back still covers it at its floor, and
+ * never beyond what the venue holds (`managed`). Surplus MUSD from the margin stays in the vault.
+ */
+export function returnLegSizing({ quotedOut, probe, marginBps, managed }) {
+  const out = BigInt(quotedOut), inn = BigInt(probe), margin = BigInt(marginBps), cap = BigInt(managed);
+  if (out <= 0n || inn <= 0n) throw new Error("returnLegSizing: a positive executable quote is required");
+  if (margin < 0n || margin >= 10_000n) throw new Error("returnLegSizing: marginBps out of range");
+  return {
+    toMusd: (venueUnits) => (BigInt(venueUnits) * out) / inn,
+    toVenueUnits: (musd) => {
+      const den = out * (10_000n - margin);
+      const units = (BigInt(musd) * inn * 10_000n + den - 1n) / den;
+      return units < cap ? units : cap;
+    },
+  };
+}
+
+/**
+ * Venue units for one unwind: the MUSD gap converted at the executable rate, then held to what the
+ * return bridge will carry. The bridge minimum is a USDC amount, so it binds AFTER conversion. Applied
+ * in MUSD at 1:1 it let a 10.01 MUSD gap become a 9.98 USDC ticket that can never cross, which the
+ * planner then counted as covering the gap for good (Codex, 2026-09-29). A gap below the minimum is
+ * raised to it rather than left waiting for a deposit; the surplus lands in the buffer. Never leaves
+ * the venue a tail too small to bring home, and returns 0n when the venue holds less than one crossing.
+ */
+export function unwindUnits({ gap, toVenueUnits, bridgeMinimum, managed }) {
+  const min = BigInt(bridgeMinimum), held = BigInt(managed);
+  if (gap <= 0n || held === 0n || held < min) return 0n;
+  let units = toVenueUnits(gap);
+  if (units < min) units = min;
+  if (held - units < min) units = held;
+  return units;
+}
+
+/**
  * De-allocation proposal. `amount` is denominated in the VENUE's token (6dp mUSDC), while the
  * obligation that motivates it is 18dp MUSD — the caller scales, because only it knows both
  * decimals. Admin-expiry, no maxBlock: this task crosses no pool, so there is no price for a
@@ -507,11 +550,24 @@ export function shouldSwapBackForFunding(s) {
   return outstanding > 0n && s.available > 0n;
 }
 
+/** Protect CLOSED, unfunded MUSD debt before spending executor-held mUSDC.
+ * totalReserved() excludes open requests and already-funded claims. Do not count USDC still
+ * on Ethereum/in flight: wait for it to arrive if the presently available backing is insufficient.
+ * Pro-rating (rounded UP) makes splitting a sale, even leaving one unit, obey the same bound.
+ * This is a signing-time bound, not a guarantee against new debt/state changes after signing.
+ */
+export function swapBackFundingFloor({ amount, held, buffer, outstanding }) {
+  amount = uint256(amount, "funding amount"); held = uint256(held, "funding held");
+  buffer = uint256(buffer, "funding buffer"); outstanding = uint256(outstanding, "funding outstanding");
+  if (amount === 0n || held === 0n || amount > held) throw new Error("funding amount exceeds available backing or is zero");
+  const gap = outstanding > buffer ? outstanding - buffer : 0n;
+  return (gap * amount + held - 1n) / held;
+}
+
 /**
  * Standalone return-leg swap (`swap_usdc_to_musd_on_mezo`). Turns executor-held mUSDC into
  * MUSD in the VAULT BUFFER, touching no batch — see MezoOpsExecutor._handleSwapBack for why that
- * separation exists. `minMusdOut` comes from the caller's OWN quote rather than from any target
- * figure, so the operator's independent quote-vs-minOut check has something real to bound.
+ * separation exists. `minMusdOut` must satisfy the independent quote, TWAP and closed-debt floors.
  *
  * @param {{musdcIn:bigint, quotedOut:bigint, slippageBps:bigint, executor:string,
  *          nonce:bigint, blockTimestamp:bigint, swapExpirySecs:bigint, maxBlock:bigint}} s
@@ -519,10 +575,18 @@ export function shouldSwapBackForFunding(s) {
 export function proposeSwapBack(s) {
   if (s.musdcIn <= 0n) return null;
   if (s.quotedOut <= 0n) return null;
-  const { minOut: minMusdOut } = resolveMinOut({
+  const { minOut: slipFloor } = resolveMinOut({
     quotedOut: s.quotedOut, slippageBps: s.slippageBps, depthAware: s.quoteIsDepthAware === true,
     requireDepthAware: s.requireDepthAwareQuote, feeBps: s.poolFeeBps, label: "swap-back",
   });
+  // The TWAP floor (usdc-valuation.mjs twapFloorOut) binds the SIGNED min-out, not only the sizing:
+  // the slippage margin below a quote already near the cap would otherwise let the swap land a
+  // second margin lower. A quote under it cannot execute, so nothing is proposed.
+  const twapFloor = uint256(s.twapFloor ?? 0n);
+  const fundingFloor = uint256(s.fundingFloor ?? 0n);
+  const requiredFloor = fundingFloor > twapFloor ? fundingFloor : twapFloor;
+  if (s.quotedOut < requiredFloor) return null;
+  const minMusdOut = slipFloor > requiredFloor ? slipFloor : requiredFloor;
   if (minMusdOut <= 0n) return null; // the executor rejects an unpriced swap — never propose one
   const payload = "0x" + word(s.musdcIn) + word(minMusdOut);
   const task = {

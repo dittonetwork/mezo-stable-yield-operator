@@ -455,3 +455,106 @@ test("alignment REFUSES to walk a pin forward", () => {
   };
   assert.throws(() => alignPins(p, 30n, () => 1001n), /mezo timestamp alignment exceeded finalized block/);
 });
+
+// --- USDC valued at the pool's exit rate (2026-09-29) -------------------------------------------
+const POOL = "0x00000000000000000000000000000000000000aa";
+const QUOTER = "0x00000000000000000000000000000000000000ab";
+const VALUATION = { pool: POOL, quoter: QUOTER, twapSecs: 1800, bandBps: 500, maxSpotDivergenceBps: 25, spotProbe: 1_000_000_000n, maxLiquidationImpactBps: 50 };
+// Live Tigris MUSD/mUSDC observe([1800, 0]) on 2026-09-29: mean tick 276412, ~1.0084 MUSD per USDC.
+const LIVE_CUMULATIVES = [6123530633673n, 6124028175273n];
+
+function pricedFixture({ quoteAt = (units) => units * 1_008_420_000_000n } = {}) {
+  const balances = new Map([
+    [`mezo:${MUSD}:${VAULT}`, 1_000n * 10n ** 18n],
+    [`mezo:${MUSD}:${EXECUTOR}`, 0n],
+    [`mezo:${MUSDC}:${EXECUTOR}`, 200_000_000n],
+    [`eth:${USDC}:${RECEIVER}`, 100_000_000n],
+    [`eth:${USDC}:${SPARK}`, 0n],
+    [`eth:${USDC}:${AAVE_OLD}`, 0n],
+  ]);
+  const uintValues = new Map([
+    [`eth:${SPARK}:totalManaged()(uint256)`, 300_000_000n],
+    [`eth:${AAVE_OLD}:totalManaged()(uint256)`, 0n],
+    [`eth:${RECEIVER}:pendingUnbondTotal()(uint256)`, 0n],
+    [`mezo:${WQ}:totalReserved()(uint256)`, 0n],
+    [`mezo:${VAULT}:totalSupply()(uint256)`, 1_000n * 10n ** 18n],
+    [`mezo:${VAULT}:VIRTUAL_SHARES()(uint256)`, 1000n],
+  ]);
+  const { reader, inventory } = fixture({ balances, uintValues });
+  inventory.bridge.inFlight = [{ id: "out-1", status: "in-flight", attribution: "protocol",
+    expectedAmount: "50000000", decimals: 6, haircutBps: 0 }];
+  const priced = {
+    ...reader,
+    addressCall: async (leg, target, sig, args, block) => target === POOL
+      ? (sig.startsWith("token0") ? MUSDC : MUSD)
+      : reader.addressCall(leg, target, sig, args, block),
+    uintCall: async (leg, target, sig, args, block) => {
+      if (target === POOL) return sig.startsWith("fee") ? 500n : 10n; // fee, tickSpacing
+      if (target === QUOTER) return quoteAt(BigInt(args[2])); // live ~1.00842 MUSD per USDC
+      return reader.uintCall(leg, target, sig, args, block);
+    },
+    tickCumulatives: async (leg, pool, secondsAgo, block) => {
+      assert.equal(leg, "mezo");
+      assert.equal(block, pins.mezo.number);
+      assert.equal(BigInt(secondsAgo), 1800n);
+      return LIVE_CUMULATIVES;
+    },
+  };
+  return { reader: priced, inventory };
+}
+
+test("USDC in every custody location is valued at the pool's exit rate; MUSD stays at face value", async () => {
+  const { reader, inventory } = pricedFixture();
+  const par = await recomputeCanonicalNav({ reader, pins, inventory });
+  assert.equal(par.usdcRate, null);
+  assert.equal(par.netAssets, 1_650n * 10n ** 18n); // 1000 MUSD + 650 USDC at 1:1
+  const priced = await recomputeCanonicalNav({ reader, pins, inventory, valuation: VALUATION });
+  assert.equal(priced.usdcRate.meanTick, 276412n);
+  // Every 6-decimal location moved, and only those: executor mUSDC, receiver, Spark, the flight.
+  const valued = priced.snapshot.assets.filter((a) => a.usdc).map((a) => a.id).sort();
+  assert.deepEqual(valued, ["adapter:aave-replaced:claimable", "adapter:aave-replaced:managed",
+    "adapter:aave-replaced:requested", "adapter:aave-replaced:underlying-dust",
+    "adapter:spark-active:claimable", "adapter:spark-active:managed", "adapter:spark-active:requested",
+    "adapter:spark-active:underlying-dust", "bridge:out-1", "eth:receiver:usdc", "mezo:executor:musdc"]);
+  assert.ok(priced.snapshot.assets.filter((a) => !a.usdc).every((a) => a.decimals === 18));
+  const usdcValue = Number(priced.netAssets - 1_000n * 10n ** 18n) / 1e18;
+  assert.ok(Math.abs(usdcValue / 650 - 1.00842) < 0.0002, `650 USDC valued at ${usdcValue}`);
+  assert.ok(priced.navRay > par.navRay);
+  // The whole 650 USDC is quoted, and the mark never exceeds its value at the TWAP.
+  assert.equal(priced.usdcExit.amount, 650_000_000n);
+  assert.ok(priced.usdcExit.impactBps <= 1n);
+  assert.ok(priced.netAssets - 1_000n * 10n ** 18n <= priced.usdcExit.twapValue);
+});
+
+test("the USDC position is marked at what selling all of it fetches; past the cap the price is held", async () => {
+  // A 100 USDC spot probe sees no impact; the whole 650 USDC position sees `bps` of it.
+  const valuation = { ...VALUATION, spotProbe: 100_000_000n };
+  const sized = (bps) => pricedFixture({
+    quoteAt: (u) => u <= 100_000_000n ? u * 1_008_420_000_000n : (u * 1_008_420_000_000n * (10_000n - bps)) / 10_000n,
+  });
+  // 30 bps of size impact on the whole position: NAV carries it, so a batch taking everything is owed
+  // exactly what selling everything returns.
+  const impact30 = await recomputeCanonicalNav({ ...sized(30n), pins, valuation });
+  assert.equal(impact30.netAssets - 1_000n * 10n ** 18n <= impact30.usdcExit.quotedOut, true);
+  assert.ok(impact30.usdcExit.quotedOut - (impact30.netAssets - 1_000n * 10n ** 18n) < 20n, "per-asset rounding only");
+  // Past the pool's depth the quote is the cliff. Nothing raises it to a floor — that would promise a
+  // sale price no pool offers — so the round refuses and the close waits for liquidity.
+  await assert.rejects(recomputeCanonicalNav({ ...sized(2_000n), pins, valuation }), /cannot absorb/);
+  // At the cap exactly it still prices, at the quote.
+  const atCap = await recomputeCanonicalNav({ ...sized(49n), pins, valuation });
+  assert.ok(atCap.netAssets - 1_000n * 10n ** 18n <= atCap.usdcExit.quotedOut);
+});
+
+test("an in-flight transfer that is not a 6-decimal USDC amount is refused, not guessed at", async () => {
+  const { reader, inventory } = pricedFixture();
+  inventory.bridge.inFlight[0].decimals = 18;
+  await assert.rejects(recomputeCanonicalNav({ reader, pins, inventory, valuation: VALUATION }), /not a 6-decimal/);
+});
+
+test("a liability can never be marked as USDC", () => {
+  assert.throws(() => computeOwnershipNav({
+    inventoryComplete: true, bridgeAttributionCertain: true, assets: [],
+    liabilities: [{ id: "owed", amount: 1n, decimals: 6, usdc: true }],
+    totalSupply: 1n, virtualShares: 0n, usdcRate: { num: 1n, den: 1n },
+  }), /liabilities are MUSD/);
+});
