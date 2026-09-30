@@ -1,5 +1,17 @@
 # Changelog — operator distribution
 
+## 2026-09-30 — PR #58 candidate, not deployed
+
+- Non-MUSD NAV positions use the pool's 30-minute exit rate and full-position liquidation quote.
+  A rate beyond 5% from par, spot/TWAP divergence above 25 bps, insufficient history, or full-position
+  impact above 50 bps refuses the price round; no substitute price is published.
+- Return swaps enforce the TWAP cap on signed `minOut` and independently protect the closed-debt
+  funding gap, including partial sales. Insufficient returned backing or adverse price can delay
+  execution; this does not guarantee withdrawal time or protect from currency loss.
+- Update aggregator and all seats together, preserving journals/WAL and draining executable old
+  rounds. The pool must first support `observe([1800,0])`. No contract upgrade. Publication of this
+  candidate is not approval to roll it out or post NAV. Follow the canonical PR #58 rollout guide.
+
 This repository is generated from Ditto's canonical repository; every entry names the canonical source
 commit and the export digest (`python3 ops/build/export-operator-repo.py <dir>` upstream reproduces it).
 **"Deployed" means running on a live host. Historical entries retain their status at the stated date.**

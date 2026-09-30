@@ -66,6 +66,26 @@ export function decodeWords(data) {
 
 export const wordToAddress = (word) => "0x" + word.toString(16).padStart(64, "0").slice(24);
 
+const toSigned = (word, bits) => {
+  const w = BigInt(word) & ((1n << 256n) - 1n);
+  const v = w >= 1n << 255n ? w - (1n << 256n) : w;
+  const limit = 1n << BigInt(bits - 1);
+  if (v < -limit || v >= limit) throw new Error(`int${bits} out of range`);
+  return v;
+};
+
+/** Decode `observe(uint32[])` return words: (int56[] tickCumulatives, uint160[] ...). */
+export function decodeTickCumulatives(words, expected = 2) {
+  if (!Array.isArray(words) || words.length < 2) throw new Error("observe returned no data");
+  const at = Number(BigInt(words[0]) / 32n);
+  const length = Number(words[at] ?? -1n);
+  if (length !== expected || words.length < at + 1 + length) throw new Error(`observe returned ${length} tick cumulatives, expected ${expected}`);
+  return words.slice(at + 1, at + 1 + length).map((w) => toSigned(w, 56));
+}
+
+/** Arguments for the static-word encoder: one dynamic uint32[] = offset, length, elements. */
+export const observeArgs = (secondsAgo) => [32n, 2n, BigInt(secondsAgo), 0n];
+
 function rpcEndpointLabel(rpcUrl) {
   try {
     const url = new URL(rpcUrl);
@@ -295,6 +315,8 @@ export function rpcChainReader(rpcUrl, legCfg, opts = {}) {
       if (w.length < 3) throw new Error(`invalid unbondState from ${adapter}`);
       return { requested: w[0], claimableAt: w[1], claimable: w[2] };
     },
+    pinnedTickCumulatives: async (pool, secondsAgo, block) =>
+      decodeTickCumulatives(decodeWords(await rpc.call(pool, "observe(uint32[])", observeArgs(secondsAgo), block))),
     placeableSurplus: () => u(legCfg.vault, "placeableSurplus()(uint256)", [], "latest"),
   };
 }
