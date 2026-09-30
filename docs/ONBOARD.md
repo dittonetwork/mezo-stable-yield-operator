@@ -16,8 +16,8 @@ the normal quorum/signature path, never publish NAV or move capital, and cannot 
 dead-man. Both new contracts support this; the older pilot does not.
 
 **Which release.** Agree the exact commit and manifest with Ditto before installing. Ditto's
-seats on the new stack run the runtime files exported from canonical `5cd9d0c` (operator export
-`f90a575`); documentation-only exports do not change the running code. There is no rc2 tag yet.
+seats on the new stack run the runtime files exported from canonical `0026358` (operator export
+`474f78f`); documentation-only exports do not change the running code. There is no rc2 tag yet.
 This HMAC-v2 distribution cannot talk to the older pilot runtime (see `CHANGELOG.md`). The new
 stack's deployment record ships as `ops/deployments/mainnet-2026-09-23.addresses.json`; confirm it
 and the configuration policy with Ditto. The 2026-08-11 pilot record in `ops/deployments/` is

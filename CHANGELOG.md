@@ -1,6 +1,9 @@
 # Changelog — operator distribution
 
-## 2026-09-30 — PR #58 candidate, not deployed
+## 2026-09-30 — PR #58, deployed on the September 23 stack
+
+Canonical `0026358` (PR #58 merge), export digest
+`b90d9a9de768e270462fe9256197ba3cca7e32f24f922288619be95b561b415b`, operator `474f78f`.
 
 - Non-MUSD NAV positions use the pool's 30-minute exit rate and full-position liquidation quote.
   A rate beyond 5% from par, spot/TWAP divergence above 25 bps, insufficient history, or full-position
@@ -9,20 +12,23 @@
   funding gap, including partial sales. Insufficient returned backing or adverse price can delay
   execution; this does not guarantee withdrawal time or protect from currency loss.
 - Update aggregator and all seats together, preserving journals/WAL and draining executable old
-  rounds. The pool must first support `observe([1800,0])`. No contract upgrade. Publication of this
-  candidate is not approval to roll it out or post NAV. Follow the canonical PR #58 rollout guide.
+  rounds. The pool must first support `observe([1800,0])`. No contract upgrade.
+- Rolled out 2026-09-30 on the aggregator and all five Ditto seats, after the pool's observation
+  capacity was raised to 600. The first NAV under this policy is epoch 2, 0.978631 MUSD per share
+  (previously 0.979448). An external seat must run this release: an older one computes a different
+  NAV and refuses every price-setting round.
 
 This repository is generated from Ditto's canonical repository; every entry names the canonical source
 commit and the export digest (`python3 ops/build/export-operator-repo.py <dir>` upstream reproduces it).
 **"Deployed" means running on a live host. Historical entries retain their status at the stated date.**
 
-## Deployment status (2026-09-28)
+## Deployment status (2026-09-30)
 
 | What | Where it runs |
 |---|---|
 | The live mainnet pilot (deployed 2026-08-11 from canonical `0cffc1002567…`, record `mainnet-2026-08-11`) | its own host tree from the pre-rc1 lineage — **not** this distribution's `main`, **not** `v2.0.0-rc1` |
 | `v2.0.0-rc1` (tag, 2026-09-05) | historical candidate, not the source of either live deployment |
-| September 23 mainnet stack | reviewed code `93d6a6b`; seats run runtime files from canonical `5cd9d0c` (operator export `f90a575`); HMAC v2, new contracts, five Ditto seats / quorum four; record `ops/deployments/mainnet-2026-09-23.addresses.json` |
+| September 23 mainnet stack | reviewed code `93d6a6b`; since 2026-09-30 seats run runtime files from canonical `0026358` (operator export `474f78f`; before that `5cd9d0c` / `f90a575`); HMAC v2, new contracts, five Ditto seats / quorum four; record `ops/deployments/mainnet-2026-09-23.addresses.json` |
 | Later documentation exports | updated instructions, not an automatic operator runtime rollout; agree an exact commit and manifest before onboarding |
 
 Joining the older pilot is not supported by this distribution. External seats need the agreed
