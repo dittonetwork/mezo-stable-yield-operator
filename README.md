@@ -2,9 +2,9 @@
 
 Software for running one operator seat in the Ditto × Mezo dMUSD vault's threshold-signing set.
 
-**Deployment status, 2026-09-28:** the September 23 mainnet stack uses the post-review code
-from canonical `93d6a6b`. Its seats run the runtime files exported from canonical `5cd9d0c`
-(operator export `f90a575`), which added the shared 500 MUSD placement minimum. It supports
+**Deployment status, 2026-09-30:** the September 23 mainnet stack uses the post-review code
+from canonical `93d6a6b`. Its seats run the runtime files exported from canonical `0026358`
+(operator export `474f78f`), which values non-MUSD assets at the Tigris pool's exit rate. It supports
 independent 13-day quorum heartbeats on both legs. A heartbeat updates only its contract's
 activity clock, not NAV, balances or an armed dead-man. The older pilot does not support this
 protocol.
@@ -15,11 +15,11 @@ and is never edited directly — a fix made here would be overwritten and, worse
 on a different release history from everyone else's. Report issues to Ditto, and report
 vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
-> **Which version is which (2026-09-28).**
+> **Which version is which (2026-09-30).**
 >
 > | | |
 > |---|---|
-> | **New mainnet stack** | `mainnet-2026-09-23`, reviewed code `93d6a6b`; seats run runtime files from canonical `5cd9d0c` (operator export `f90a575`); five Ditto seats, quorum four. Deployment record: `ops/deployments/mainnet-2026-09-23.addresses.json`. Later documentation exports do not imply a runtime rollout. |
+> | **New mainnet stack** | `mainnet-2026-09-23`, reviewed code `93d6a6b`; seats run runtime files from canonical `0026358` (operator export `474f78f`); five Ditto seats, quorum four. Deployment record: `ops/deployments/mainnet-2026-09-23.addresses.json`. Later documentation exports do not imply a runtime rollout. |
 > | **Older pilot** | `mainnet-2026-08-11`, canonical contracts `0cffc1002567…`, separate pre-rc1 host tree. This distribution is **wire-incompatible** with its runtime (HMAC v2). |
 > | **Historical tag** | `v2.0.0-rc1` was a candidate, not either deployment's source. No rc2 tag has been issued. |
 >
