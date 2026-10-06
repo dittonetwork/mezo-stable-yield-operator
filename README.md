@@ -78,10 +78,13 @@ build:
 
 ```bash
 sha256sum -c MANIFEST.sha256
+sha256sum MANIFEST.sha256       # compare with the digest Ditto confirmed for this release
 ```
 
 That manifest is the artifact agreement between the two organisations. A tree that fails it is not
-the release you agreed to run.
+the release you agreed to run. Compare the manifest's own digest with Ditto's separately supplied
+value, including for a tarball. A documentation-only export has a different manifest even when
+its runtime files are unchanged.
 
 Three tests **skip by design** on your copy (two in `npm test`, one in the reconciler suite) — they
 read a retired NAV inventory fixture that is deliberately not exported, because shipping a
@@ -94,40 +97,60 @@ your distribution is correct, not incomplete; at `85f7cab` that is 154 passed / 
 **[`docs/ONBOARD.md`](docs/ONBOARD.md) is the procedure** — config, inventory, key, start, enrolment,
 signing. It runs everything through the image, so you need Docker and nothing else on the host.
 
-The short version of what you will do: generate this seat's config and NAV inventory **through your
-own RPC endpoints**, generate a BLS key that never leaves your machine, start the reconciler and let
-it reach both chain heads, then enrol with Ditto and Mezo on both chains.
+The short version: prepare a shadow seat through **your own RPC endpoints**, exchange connection
+details and the per-seat HMAC secret with Ditto, sign one identity-ownership message, and let Ditto
+handle enrolment on both chains. Compare a real shadow proposal, then enable signing and confirm
+your seat's inclusion in a transaction with Ditto.
+
+Start with the guide's [handoff checklist](docs/ONBOARD.md#0a-connection-details-and-the-handoff-to-ditto).
+It lists exactly what you send and what Ditto returns: the pinned release, WireGuard peer details,
+assigned tunnel IP, report URL and private HMAC delivery channel. Kubernetes behind NAT is supported;
+the guide includes the routing requirements and a peer template with `PersistentKeepalive = 25`.
 
 ## Interfaces
 
 | | |
 |---|---|
-| `POST /sign` | The aggregator proposes; your seat re-derives and returns a partial signature, or `422` with a reason |
+| `POST /sign` | With `REPORT_URL` configured, accepted work receives a `202` acknowledgement; verification and the verdict follow asynchronously |
 | `POST` → `REPORT_URL` | Your seat's verdict, pushed to the aggregator. **Plain HTTP over WireGuard** — `/report` has no TLS; the tunnel and the HMAC are the security, not transport |
 | `GET /health` | Liveness. Unauthenticated, exposes no config or key material |
 
 Both signing endpoints authenticate with **HMAC-SHA256 over `JSON.stringify([2, method, pathWithQuery, timestamp, body])`**, ±30s window, using
-**one secret unique to your seat**. It authenticates the channel, never the content — an
-authenticated proposal is not a trusted one, which is what the re-derivation is for.
+**one secret unique to your seat**, also required in shadow mode. Share the same configured
+`OPERATOR_SECRET` privately with Ditto; keep it stable across restarts. It authenticates the channel,
+never the content — an authenticated proposal is not a trusted one, which is what the re-derivation
+is for.
+
+The aggregator dispatches to every configured active seat and proceeds once the threshold is met.
+It combines exactly that many available partials in ascending seat-index order; it does not wait
+for every seat. A successful signing response does not guarantee inclusion in the transaction's
+bitmap. See the guide's [selection explanation](docs/ONBOARD.md#which-partial-signatures-are-included).
 
 ## Shadow mode is a smoke test, not a probation
 
 `OPERATOR_SHADOW_ONLY=1` performs the complete verification and reports the verdict, but creates no
-partial signature and loads no BLS key. Run it long enough to see **one real proposal** agree with
-the fleet. There is no reason to wait days: at n=6 the threshold is 4 and the five existing seats can
+partial signature and loads no BLS key. You can prepare and reconcile locally before enrolment;
+real proposal comparison starts **after** Ditto enrols the seat and adds it to the aggregator.
+Run it long enough to see **one real proposal** agree with the fleet. There is no fixed waiting
+period: at n=6 the threshold is 4 and the five existing seats can
 still sign, so a misconfigured new seat simply does not contribute — it cannot stall the vault and it
-cannot authorize anything alone. Remove the setting when you are satisfied.
+cannot authorize anything alone. Coordinate completion of the comparison with Ditto, then remove
+the setting and restart.
 
 ## Joining the set
 
-Installing this software does not join you to the consensus, and never will. Enrolment is a manual
-**two-organisation** ceremony: one guardian proposes your address and public key on each chain, the
-other confirms, on **both** Mezo and Ethereum. You send only public material — the compressed pubkey,
-`pubkeyG1`, `popG2`. Your private key never leaves your host, must never appear in chat, a ticket, or
-a shared password manager, and Ditto will never ask for it.
+Ditto records the onboarding agreement and sends a complete, one-time challenge message. You review
+and sign it with your identity wallet to prove control of the address and bind it to your BLS key
+and deployment. This is an off-chain message signature and costs no gas.
 
-Full procedure: [`docs/ONBOARD.md`](docs/ONBOARD.md). What happens to a seat afterwards — suspension,
-key rotation, leaving — is a two-organisation ceremony in each case; ask Ditto to walk it with you.
+Enrolment then uses both guardian slots on **both** Mezo and Ethereum: one proposes and the other
+confirms. Both slots are currently controlled by Ditto; Ditto performs those transactions and updates
+the aggregator. You supply the identity address, compressed BLS pubkey, `pubkeyG1`, `popG2`, WireGuard
+details and the returned identity signature. Separately, share the per-seat **HMAC secret** through
+the agreed private channel. Your **BLS and identity private keys** remain under your control.
+
+Full procedure: [`docs/ONBOARD.md`](docs/ONBOARD.md). Suspension, key rotation and leaving also need
+guardian actions; coordinate them with Ditto.
 
 ## One writer, enforced by the kernel
 

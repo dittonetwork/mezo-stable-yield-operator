@@ -7,6 +7,20 @@ infrastructure.
 Ditto's internal runbooks, host layout, guardian incident procedures and audit material are
 deliberately **not** part of this repository. Nothing here depends on them.
 
+The onboarding path is:
+
+| Stage | You | Ditto |
+|---|---|---|
+| Prepare (§1–§3) | Verify the agreed release; generate your config, inventory and keys; start in shadow mode and let reconciliation catch up | Confirm the deployment and release |
+| Connect (§0a) | Send the public seat details below and share your existing HMAC secret privately | Assign the tunnel address, configure the peer and firewall, and confirm the report URL |
+| Prove ownership (§2d) | Review and sign one message with your identity wallet; return the signature | Record approval and send the exact message with a fresh challenge |
+| Enrol (§4) | Keep the seat running in shadow mode | Verify the proof, enrol on both chains, add the seat to the aggregator and confirm its index |
+| Commission (§5–§6) | Compare a real shadow verdict, then enable signing with Ditto | Confirm the comparison and verify a transaction includes your seat's signature |
+
+You do not need funds in the identity wallet or to send any enrolment transaction. You can prepare
+the seat while waiting for the network details and ownership challenge. A local shadow seat at
+READY completes a rehearsal; live proposal comparison starts after enrolment and aggregator setup.
+
 ---
 
 ## 0. What you agree with Ditto first
@@ -30,10 +44,14 @@ commit. Whichever it is, **verify before you build** — the manifest is the art
 
 ```bash
 sha256sum -c MANIFEST.sha256      # every line OK, and no "FAILED" anywhere
-git rev-parse HEAD                # if you got a git tree: must equal the agreed commit
+sha256sum MANIFEST.sha256         # compare this digest with the value Ditto supplied
+git rev-parse HEAD                # for a git checkout: must equal the agreed full commit
 ```
 
-If you were sent a tarball, that checksum run *is* your provenance. Do not build a tree that fails it.
+For a tarball, compare the manifest digest with Ditto's separately confirmed value as well as
+checking every file. A manifest bundled with the files alone does not prove which release they are.
+Documentation-only exports also have a new commit and manifest digest; unchanged runtime code does
+not make their manifests interchangeable. Do not build a tree that fails the agreed checks.
 
 | | |
 |---|---|
@@ -62,6 +80,72 @@ exactly like the BLS key.
 independently. Record the tag, commit, artifact hash and both approvals. Do **not** describe it as
 on-chain build approval — it is a two-organisation agreement, and the difference matters if it is
 ever disputed.
+
+## 0a. Connection details and the handoff to Ditto
+
+Send this public-information checklist to your Ditto onboarding contact when requesting a seat.
+If reconciliation is still catching up, say so; network setup and approval can proceed in parallel.
+
+```text
+Organisation and technical contact:
+Onboarding agreement/reference:
+Deployment id:
+Operator repository commit (full SHA):
+SHA-256 of MANIFEST.sha256:
+Identity address:
+BLS pubkeyCompressed:
+BLS pubkeyG1:
+BLS popG2:
+WireGuard public key:
+Static egress IP, if available:
+Runtime: Compose / Kubernetes / systemd
+Operator port: 4000 (or the port you selected)
+Status: shadow; catching up / READY
+```
+
+Ditto replies with the agreed release and deployment, **aggregator WireGuard public key**, public
+**UDP endpoint (`host:port`)**, aggregator tunnel IP, **assigned seat tunnel IP/CIDR**, and the exact
+`REPORT_URL`. Ditto also confirms whether your egress IP needs allowlisting, when the peer/firewall
+configuration is active, and the verified recipient and private channel for HMAC delivery. Receive
+these values directly from your onboarding contact; example addresses are not allocations.
+
+**HMAC is required, including in shadow mode.** Generate one 32-byte random secret, encoded as
+64 hexadecimal characters, in §2. Share the **same `OPERATOR_SECRET` your seat uses** through the
+agreed private channel, such as a one-time encrypted password-manager share. Ditto installs that
+value for your seat on the aggregator. It authenticates both `/sign` requests and `/report`
+responses; without a matching secret the aggregator cannot attribute your verdict. Retain it in
+your secret store across restarts. Do not generate a second value just to send to Ditto.
+
+The HMAC secret is shared with Ditto. Your BLS and identity private keys stay under your control.
+Keep secrets and credentialed RPC URLs out of the public-information checklist and group chats.
+
+**Kubernetes or another host behind NAT is supported.** Your WireGuard peer initiates outbound UDP
+to the aggregator's endpoint; no public inbound port or port forwarding is required on your side.
+Use `PersistentKeepalive = 25` to preserve the NAT mapping. The pod/service routing and network
+policy must still let the aggregator reach your operator over the tunnel.
+
+The operator-side peer settings have this shape; substitute only the values Ditto assigned:
+
+```ini
+[Interface]
+Address = <assigned-seat-tunnel-ip>/<prefix>
+PrivateKey = <your-local-wireguard-private-key>
+
+[Peer]
+PublicKey = <aggregator-wireguard-public-key>
+Endpoint = <aggregator-public-host>:<udp-port>
+AllowedIPs = <aggregator-tunnel-ip>/32
+PersistentKeepalive = 25
+```
+
+| Direction | Application endpoint | Access |
+|---|---|---|
+| Aggregator → your seat | `http://<seat-tunnel-ip>:4000/sign` | TCP 4000 by default; allow the aggregator tunnel IP |
+| Your seat → aggregator | `http://<aggregator-tunnel-ip>:4500/report` | TCP 4500 in the mainnet setup; use the exact URL Ditto supplies |
+
+These are HTTP endpoints inside WireGuard with per-seat HMAC authentication. The public UDP
+WireGuard port is separate from these TCP ports. Ditto configures its cloud and host firewalls;
+you configure the route and access to your seat. Confirm both directions before enrolment.
 
 ## 0b. What your seat is and is not — read this before you commit resources
 
@@ -138,8 +222,10 @@ No host Node, Python or `cast` required. Build once:
 # Your seat's HMAC secret. Export it FIRST: Compose interpolates the whole file before running
 # anything, and the operator service declares OPERATOR_SECRET as required — so without it even
 # `docker compose run --rm tools` refuses, long before any service starts.
+# Generate ONCE. On later runs, load the existing value from your secret store instead.
+umask 077
 export OPERATOR_SECRET=$(openssl rand -hex 32)
-echo "$OPERATOR_SECRET"     # send this to Ditto out of band; it is unique to your seat
+# Save this value securely and share it through the private channel agreed in §0a.
 
 # The deployment record Ditto sent you (§0) — WHICH deployment this seat joins. Compose needs its
 # two start blocks in the environment before it will run ANY command, `build` and `run --rm tools`
@@ -166,6 +252,7 @@ the path. Those are credentials — treat that directory like the key directory.
 
 Keep all three — `OPERATOR_SECRET`, `RECON_START_MEZO`, `RECON_START_ETH` — exported for every
 command below, or put them in a `.env` beside `compose.yaml`; Compose reads that automatically.
+Keep `.env` mode `0600` if it contains the secret.
 
 **a. Your seat's config.** Put the deployment record where the image sees it, then generate. The
 generator re-reads every anchor address in the record from the chain through *your* endpoints and
@@ -183,8 +270,7 @@ docker compose run --rm \
 `SEAT_INDEX` is optional and assigned at enrolment — leave it unset.
 
 `REPORT_URL` is **required by the generator but useless before the tunnel exists**. If you are
-standing the seat up before the WireGuard exchange — which is the sensible order, since everything
-up to §4 is yours alone — point it at a local sink and correct it later:
+standing the seat up before the WireGuard exchange, use a loopback placeholder and correct it later:
 
 ```bash
 -e REPORT_URL=http://127.0.0.1:4500/report
@@ -198,6 +284,12 @@ about exactly this, because from the outside it is indistinguishable from a seat
 same way. **Derive it; do not accept a copy.** It is the list of custody addresses your canonical NAV
 sums over, and it is the one input the threshold cannot check for you: if it is wrong, every seat
 re-derives the same wrong price and every seat signs it.
+
+**Known metadata issue in the `474f78f` runtime:** the inventory generator writes
+`_deployment: "mainnet-pilot-2026-08"` even for a different deployment. No production reader uses
+that label; the generator checks the actual custody addresses and the reconciler checks their
+agreement with its configuration. Use `config/addresses.json`'s `deployment` for the enrolment
+message. Do not substitute the inventory label or change custody addresses to match it.
 
 **c. Your BLS key**, generated here and never transmitted:
 
@@ -220,29 +312,44 @@ can read it back with no further chown. Confirm before starting:
 ls -ln secrets/operator.bls.key      # expect  -rw------- 1 10001 10001
 ```
 
-**d. Prove you control the identity address.** Ditto sends you a one-time **challenge** string when
-they add you to their approved-operator manifest. Sign this exact message with the identity key from
-§0 — it binds the deployment, your address and both pieces of BLS key material to that challenge, so
-a signature collected for one onboarding cannot be reused for another:
+**d. Prove you control the identity address — when Ditto sends the challenge.** If you are still
+preparing the seat or rehearsing, continue to §3 now. This step needs Ditto's approval record.
 
-```bash
-DEPLOYMENT=$(jq -r .deployment config/addresses.json)      # the record's id (the September 23 record says mainnet-2026-09-23)
-MSG=$(printf 'ditto-operator-enrolment\ndeployment=%s\nidentity=%s\npubkeyG1=%s\npopG2=%s\nchallenge=%s' \
-  "$DEPLOYMENT" "$IDENTITY_ADDR" "$PUBKEY_G1" "$POP_G2" "$CHALLENGE")
-docker compose run --rm tools cast wallet sign --private-key "$IDENTITY_KEY" "$MSG"
+This is one off-chain wallet signature, with no gas or funds required. The BLS proof of possession
+shows that the BLS key is held; this separate proof shows that you control the **identity address**
+being enrolled and binds it to that key and deployment.
+
+Ditto sends the **complete message to sign** as `enrolment-message.txt`, containing a fresh
+one-time challenge. Review its six lines against your deployment record and public key material:
+
+```text
+ditto-operator-enrolment
+deployment=<deployment id from addresses.json>
+identity=<your identity address, lowercase>
+pubkeyG1=<your pubkeyG1, lowercase>
+popG2=<your popG2, lowercase>
+challenge=<fresh challenge from Ditto>
 ```
 
-Everything lowercase, and the values must be byte-identical to what you send Ditto — the signature
-covers them, so a mismatch reads as "did not sign this" rather than as a typo. `deployment` is the
-record's `deployment` field and must equal the id in Ditto's own manifest; Ditto states it when
-sending the challenge, and a signature over another id — another deployment, or a rehearsal — does
-not verify. Send back the signature. If Ditto's preflight cannot verify it, enrolment stops there,
-by design.
+The file Ditto supplies has real values, not these placeholders. Save it beside `compose.yaml` and
+sign it with the identity wallet from §0:
+
+```bash
+MSG=$(cat enrolment-message.txt)
+docker compose run --rm tools cast wallet sign --interactive "$MSG"
+```
+
+Enter the identity private key only in the local prompt, then return the printed signature to
+Ditto. The key stays local. The message uses LF line endings, without extra spaces; the command
+above removes a trailing newline. The identity and BLS hex fields are lowercase, while the
+deployment id and challenge must match Ditto's message exactly. For this stack the deployment is
+`mainnet-2026-09-23`. A proof for a different deployment or challenge will not verify.
 
 ## 3. Start
 
 ```bash
-export OPERATOR_BIND=10.x.x.x            # your WireGuard address, NOT 0.0.0.0
+export OPERATOR_BIND=127.0.0.1          # local preparation before WireGuard is configured
+# Once Ditto confirms the tunnel, replace this with your assigned WireGuard IP and run up -d again.
 # RECON_START_MEZO / RECON_START_ETH are still exported from §2 (or in .env): they are the
 # reconciler's first-run start, and compose refuses to bring it up without them.
 
@@ -290,21 +397,14 @@ confident balance. Diagnose that condition from the reconciler log, not from `/h
 either RPC or read the inventory. **Use the readiness check to decide whether the seat is ready** —
 not `/health`, and not `docker ps`.
 
-## 4. Enrolment — NOT A STEP YOU PERFORM
+## 4. Enrolment — Ditto performs the on-chain steps
 
-> **Everything above this line is yours alone.** You can run all of it, today, on your own hardware,
-> and reach a healthy shadow seat without involving anyone.
->
-> **This section is not.** Enrolment is performed by Ditto's and Mezo's guardians, on two chains, and
-> nothing you type makes it happen. It is described here so you know what will happen to you and in
-> what order — not as a checklist to work through. §5 and §6 *are* yours again, but only once this
-> ceremony has actually completed; they are meaningless before it.
->
-> **If you are evaluating, rehearsing, or doing a dry run: stop at §3.** A shadow seat at READY is
-> the complete rehearsal. There is nothing further to test that does not involve permanently
-> changing a live quorum on two chains — and on **2026-08-22** a dry-run seat did exactly that, in 22
-> seconds, using an identity its own operator had called disposable. That is the reason this section
-> now opens with a boundary instead of a step number.
+Your part is to complete the §0a handoff, share the HMAC secret privately, return the §2d identity
+signature, and keep a READY seat running in shadow mode. Ditto handles the guardian transactions
+on both chains and the aggregator configuration. No guardian key or funded wallet is needed from you.
+
+**For an evaluation or dry run, stop at §3.** A local shadow seat at READY completes that rehearsal.
+Continuing here changes live membership and requires an explicit agreement to operate a seat.
 
 **Before enrolment can even be requested**, all of these must already be true:
 
@@ -334,23 +434,16 @@ says; against Ditto itself it separates nothing today. Ditto plans to move `Prox
 the Ditto guardian slot to Ditto-owned Safe multisigs; until that is executed and announced, assume
 the arrangement described here.
 
-You are being told this because the paragraph below says "two-organisation ceremony", and that
-describes the mechanism rather than today's custody. Judge what your seat is worth to you with the
-real arrangement in front of you.
-
 ### What actually happens
 
-Installing this software does not join you to the consensus, and never will. Enrolment is a manual
-**two-organisation** ceremony in the contract's sense: one guardian slot proposes your identity
-address and public key, the other confirms — on **both** Mezo and Ethereum. Proof of possession is
-verified on chain, so a key you do not hold is rejected by the contract.
+Ditto records approval, issues the §2d challenge and verifies your returned identity proof. Once
+your seat is READY and transport works in both directions, Ditto pauses the aggregator for the
+membership change. One guardian slot proposes your identity and BLS key, and the other confirms,
+on **both** Mezo and Ethereum. The contracts verify the BLS proof of possession.
 
-You send Ditto, out of band: your identity address, `pubkeyG1`, `popG2`, the compressed pubkey, and
-your `OPERATOR_SECRET`. **Ditto then performs both halves of the enrolment** — one call from each
-guardian slot, both slots being Ditto's today (see above) — and adds your seat to the
-aggregator's config — index, URL, compressed pubkey — and restarts it. The aggregator's startup
-preflight refuses to serve unless both chains and its own config agree, so a half-finished ceremony
-stops the round rather than producing short ones.
+Ditto adds the assigned index, tunnel URL, compressed public key and per-seat HMAC secret to its
+aggregator configuration. Its startup preflight requires both chains and the configured operator
+set to agree. Ditto then restarts it and confirms you can begin the shadow comparison.
 
 **This is where your index comes from.** It is assigned on chain by the enrolment, which is why
 `SEAT_INDEX` was optional in step 2.
@@ -362,9 +455,10 @@ enrolment, not before it.** Your seat's verdict is identified by its HMAC secret
 aggregator's operator list — so until you are enrolled and in that config, there is nothing for a
 verdict to be compared against.
 
-You set `OPERATOR_SHADOW_ONLY=1` back at §3 and it has been in force since — the seat has been
-running, verifying and reporting, without ever holding a key or producing a signature. Nothing to
-change here; just watch.
+You set `OPERATOR_SHADOW_ONLY=1` back at §3 and it has been in force since. Before enrolment and
+aggregator setup, the seat can run and reconcile locally but receives no normal live proposals.
+After setup it verifies proposals and reports verdicts, without loading the BLS key or producing
+partial signatures. Leave the setting in place for this comparison.
 
 Your seat performs the complete independent verification and reports its verdict, but creates no
 partial signature and loads no BLS key. Watch **one real proposal** agree with the fleet, then remove
@@ -377,25 +471,42 @@ vault and cannot authorize anything alone. Take longer only if *you* want the co
 ## 6. Enable signing
 
 Remove `OPERATOR_SHADOW_ONLY`, restart, and prove one signed round with your bit set in
-`TaskVerified.signerBitmap`. You are in the set.
+`TaskVerified.signerBitmap`. Coordinate that acceptance check with Ditto: a returned partial is
+not guaranteed to be selected for the transaction (see below). No HMAC or BLS key change is needed
+when leaving shadow mode.
+
+### Which partial signatures are included?
+
+The aggregator dispatches each proposal to every configured active seat. Seats acknowledge the
+request, verify independently and push their verdicts to `/report`. The aggregator proceeds on a
+collection tick with at least the threshold number of partials, without waiting for every seat.
+It combines **exactly the threshold**, selecting available reports in ascending seat-index order.
+
+At five Ditto seats plus one external seat, the threshold remains four. If seats 0–3 have reported
+by the collection tick, a partial from seat 5 is not selected even if it has also arrived. Your
+signed response and your presence in the final bitmap are therefore different observations.
+If your partials are consistently omitted, ask Ditto to review selection and round timing before
+calling commissioning complete. Shadow verdicts contain no partial and never count toward quorum.
 
 ## 7. Running it
 
 | | |
 |---|---|
-| `POST /sign` | Ditto proposes; your seat re-derives against its own reads and returns a partial signature, or `422` with a reason |
+| `POST /sign` | Ditto proposes; with `REPORT_URL` configured, a `202` acknowledges accepted work, not a signature or successful verification |
 | `POST` → `REPORT_URL` | your verdict, pushed back. **Plain HTTP over WireGuard** — `/report` has no TLS; the tunnel and HMAC are the security |
 | `GET /health` | liveness, unauthenticated, exposes nothing |
 
-A `422` is your seat working. Investigate the reason before assuming it is a bug: refusing a task the
-rest of the set signs is exactly what an independent operator is for.
+Verification happens after the acknowledgement; the signed result, shadow verdict or refusal is
+posted to `/report`. A request rejected before acknowledgement can return an HTTP error instead.
+Investigate refusals against the seat's own reads: refusing a task the rest of the set signs is
+part of independent verification.
 
 **Keep running:** both services up, the reconciler never stopped for long (it must stay near both
 heads), your two providers healthy, and your key backed up somewhere only you control. If you need to
 step away, tell Ditto — a seat that is enrolled but silent reduces the set's margin without reducing
 its threshold.
 
-**Key rotation and leaving** are two-organisation ceremonies too; ask Ditto to walk them with you.
+**Key rotation and leaving** also require guardian actions; coordinate them with Ditto.
 
 ## 8. Verifying your copy
 
