@@ -121,6 +121,18 @@ function sanitizedTransportError(error, rpcUrl) {
   return new Error(`rpc transport failed at ${label}: ${message.slice(0, 160)}`);
 }
 
+// Some providers report infrastructure failures in a successful HTTP response. Retry only known
+// backend failures on idempotent reads. A revert, invalid params, unknown error or noncanonical pin
+// is NOT a reason to shop for an answer from another endpoint.
+export function isRetryableRpcError(error, method) {
+  if (!["eth_call", "eth_blockNumber", "eth_getBlockByNumber", "eth_chainId"].includes(method)) return false;
+  const message = String(error?.message ?? "");
+  if ([3, -32600, -32602].includes(error?.code) || /revert|invalid opcode|out of gas/i.test(message)) return false;
+  return /cannot query with height in the future/i.test(message)
+    || (error?.code === -32601 && /method .* (?:does not exist|not available|not found)/i.test(message))
+    || /\b(?:rate limit|too many requests|request timeout|request timed out|gateway timeout)\b/i.test(message);
+}
+
 /**
  * @param {string} rpcUrl
  * @param {{fetchImpl?: Function, maxBatch?: number, rpcFallbacks?: string[], maxAttempts?: number,
@@ -163,8 +175,8 @@ export function jsonRpc(rpcUrl, opts = {}) {
   let nextId = 1;
 
   /**
-   * POST one chunk, retrying only TRANSPORT failures. A per-call `row.error` is NOT retried: an
-   * execution revert is a real answer, and re-asking cannot change it.
+   * Retry transport and known transient backend failures with the SAME payload/pins. If any error
+   * in a valid batch is terminal, return that batch unchanged; never hide a revert by retrying it.
    */
   async function post(chunk) {
     let lastError;
@@ -198,6 +210,12 @@ export function jsonRpc(rpcUrl, opts = {}) {
             throw new Error("RPC batch response has duplicate/unknown id or invalid result");
           }
           seen.add(row.id);
+        }
+        const errors = rows.filter((row) => row.error);
+        if (errors.length && errors.every((row) => isRetryableRpcError(
+          row.error, chunk.find((c) => c.payload.id === row.id).payload.method,
+        ))) {
+          throw new Error(`rpc backend: ${errors[0].error.message}`);
         }
         return rows;
       } catch (e) {

@@ -264,3 +264,68 @@ test("a leg's rpcFallbacks reach the transport without call-site threading", asy
   assert.equal(await reader.placeableSurplus(), 42n);
   assert.deepEqual(seen, ["http://primary", "http://backup"]);
 });
+
+const backendErrors = [
+  { code: -32000, message: "rpc error: code = Unknown desc = codespace sdk code 26: invalid height: cannot query with height in the future; please provide a valid height" },
+  { code: -32601, message: "the method eth_call does not exist/is not available" },
+  { code: -32603, message: "Request timeout" },
+  { code: -32005, message: "rate limit exceeded" },
+];
+for (const error of backendErrors) {
+  test(`JSON-RPC backend error rotates providers, preserving the exact pin: ${error.message}`, async () => {
+    const seen = [], payloads = [];
+    const pin = { blockHash: "0x" + "ab".repeat(32), requireCanonical: true };
+    const rpc = jsonRpc("http://primary", {
+      rpcFallbacks: ["http://backup"], retryDelayMs: 0,
+      fetchImpl: async (url, init) => {
+        seen.push(url); payloads.push(JSON.parse(init.body));
+        return { ok: true, json: async () => payloads.at(-1).map(({ id }) =>
+          url.endsWith("primary") ? { id, error } : { id, result: "0x2a" }) };
+      },
+    });
+    assert.equal(await rpc.call("0x1", "decimals()(uint8)", [], pin), "0x2a");
+    assert.deepEqual(seen, ["http://primary", "http://backup"]);
+    assert.deepEqual(payloads[0], payloads[1]);
+    assert.deepEqual(payloads[1][0].params[1], pin);
+  });
+}
+
+test("backend errors exhaust the attempt budget, never manufacture a result or leak credentials", async () => {
+  const seen = [];
+  const rpc = jsonRpc("http://primary/key-secret", {
+    rpcFallbacks: ["http://backup/backup-secret"], maxAttempts: 3, retryDelayMs: 0,
+    fetchImpl: async (url, init) => {
+      seen.push(url);
+      return { ok: true, json: async () => JSON.parse(init.body).map(({ id }) =>
+        ({ id, error: { code: -32603, message: `Request timeout at ${url}` } })) };
+    },
+  });
+  await assert.rejects(rpc.blockNumber(), (e) => {
+    assert.match(e.message, /timeout/);
+    assert.doesNotMatch(e.message, /key-secret|backup-secret/);
+    return true;
+  });
+  assert.equal(seen.length, 3);
+});
+
+test("terminal errors, including mixed batches, cannot be hidden by provider fallback", async () => {
+  for (const terminal of [
+    { code: 3, message: "execution reverted: Request timeout" },
+    { code: -32602, message: "invalid params" },
+    { code: -32000, message: "header not found" },
+    { code: -32000, message: "unknown contract failure" },
+  ]) {
+    let calls = 0;
+    const rpc = jsonRpc("http://primary", {
+      rpcFallbacks: ["http://backup"], retryDelayMs: 0,
+      fetchImpl: async (_url, init) => {
+        calls++;
+        return { ok: true, json: async () => JSON.parse(init.body).map(({ id }, i) =>
+          ({ id, error: i === 0 ? backendErrors[0] : terminal })) };
+      },
+    });
+    const results = await Promise.allSettled([rpc.blockNumber(), rpc.blockNumber()]);
+    assert.ok(results.every((r) => r.status === "rejected"));
+    assert.equal(calls, 1);
+  }
+});

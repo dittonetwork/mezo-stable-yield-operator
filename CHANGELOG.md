@@ -1,5 +1,15 @@
 # Changelog — operator distribution
 
+## 2026-10-12 — bounded RPC recovery
+
+- The shared read client also retries recognized JSON-RPC backend failures (future height,
+  unavailable read method, rate limit, request timeout), using the configured reserve endpoint.
+  Three attempts by default, at most 15 seconds per attempt; signed block-hash pins do not change.
+- Reverts, invalid parameters and unknown contract errors still fail closed. No NAV valuation,
+  publication, signature format, state schema or economic parameter changes.
+- This is compatible with the September 30 runtime. The export alone does not update a host;
+  use the rollout evidence in the canonical repository for the deployed revision.
+
 ## 2026-09-30 — PR #58, deployed on the September 23 stack
 
 Canonical `0026358` (PR #58 merge), export digest
