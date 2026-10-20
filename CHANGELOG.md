@@ -1,5 +1,17 @@
 # Changelog — operator distribution
 
+## 2026-10-20 — 5% placement buffer
+
+- The September 23 V2 deployment's shared placement buffer floor is 500 bps (5%), down from
+  1500 bps. Both proposer and operators enforce it, in addition to on-chain withdrawal reservations.
+- The 500 MUSD placement minimum, 100 MUSD / 24-hour withdrawal close triggers, 48-hour NAV
+  cadence and swap/FX/liquidity checks are unchanged. No contract, ABI, key or state-schema change.
+- Update the aggregator and all seats together, preserving signature journals and the WAL.
+  Older seats retain 15% and may refuse newly eligible placements. Do not update the August pilot.
+- This permits more capital to earn in Ethereum venues. Withdrawals exceeding the available
+  Mezo buffer need an unwind/bridge/swap and can take longer. The 5% floor limits placements;
+  it does not prevent withdrawals from consuming the buffer or guarantee a withdrawal time.
+
 ## 2026-10-12 — bounded RPC recovery
 
 - The shared read client also retries recognized JSON-RPC backend failures (future height,

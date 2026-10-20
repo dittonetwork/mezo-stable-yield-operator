@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 
 import { verifyProposal, castChainReader, usdcValuation } from "./verify.mjs";
 import { usdcExitRate, usdcToMusd, twapFloorOut } from "../task-engine/usdc-valuation.mjs";
-import { SHARED_NAV_POLICY } from "../task-engine/threshold-config.mjs";
+import { SHARED_NAV_POLICY, resolveTrackedThresholds } from "../task-engine/threshold-config.mjs";
 import { keccak256Hex } from "../task-engine/keccak.mjs";
 import { TaskType, calldataHash, _word as word } from "../task-engine/engine.mjs";
 
@@ -275,8 +275,8 @@ test("REFUSES a swap task with no maxBlock bound", async () => {
 // The operational buffer floor lives OFF chain (2026-08-10) so it can be tuned without a 2-of-2
 // guardian ceremony. That only means anything if the OPERATORS apply it: otherwise the aggregator is
 // the sole judge of its own bound and the git-tracked number binds nothing — the exact defect the
-// close thresholds had. `placeableSurplus()` still nets the solvency-critical reservations and the
-// vault's own 5% backstop on chain; this is the cushion above that.
+// close thresholds had. `placeableSurplus()` still nets the solvency-critical reservations on
+// chain; the percentage cushion is enforced here, not by another on-chain floor.
 test("REFUSES a placement that eats into the operational buffer floor", async () => {
   // 10k TVL, 1000 placeable on chain. A 15% target withholds 1500 — more than is placeable — so the
   // bound clamps to 0 and any ask is refused.
@@ -304,6 +304,24 @@ test("the floor is opt-in: absent or 0, placement is bounded by placeableSurplus
   for (const cfg of [CFG, { ...CFG, placementBufferFloorBps: 0 }]) {
     const v = await verifyProposal({ task: bind(task(), p), payload: p, cfg, chains: chainsFor() });
     assert.equal(v.ok, true, v.reason);
+  }
+});
+
+test("shipped 5% policy signs the exact placement ceiling and refuses one wei beyond it", async () => {
+  const policy = resolveTrackedThresholds(readFileSync, new URL("../operator-config.example.json", import.meta.url));
+  const cfg = { ...CFG, ...policy };
+  const total = 100_000n * 10n ** 18n;
+  const buffer = 15_000n * 10n ** 18n;
+  const reserved = 2_000n * 10n ** 18n;
+  const ceiling = 8_000n * 10n ** 18n; // 15k - 2k reservations - 5k floor
+  for (const [amount, expected] of [[ceiling, true], [ceiling + 1n, false]]) {
+    const p = placement(amount, amount / 10n ** 12n * 995n / 1000n);
+    const verdict = await verifyProposal({
+      task: bind(task(), p), payload: p, cfg,
+      chains: chainsFor({ totalAssets: async () => total, placeableSurplus: async () => buffer - reserved }),
+    });
+    assert.equal(verdict.ok, expected, verdict.reason);
+    if (!expected) assert.match(verdict.reason, /buffer floor/);
   }
 });
 
